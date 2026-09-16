@@ -1,0 +1,50 @@
+# ============================================================
+#  Peanut_WLYZ — 开源仓库忽略规则
+# ============================================================
+
+# ---- 编译产物 ----
+bin/
+src/bin/
+*.obj
+*.o
+*.exe
+*.dll
+*.lib
+*.exp
+*.ilk
+*.pdb
+*.iobj
+*.ipdb
+*.tlog
+*.lastbuildstate
+*.recipe
+
+# ---- VS 生成 ----
+.vs/
+*.user
+*.suo
+
+# ---- 服务端私钥（禁止入库） ----
+# demo 用途的 server_privkey.hex 已随仓库提供（见 README 说明），
+# 但 PEM 形式的私钥与任何本地生成的真实密钥一律不入库。
+*.pem
+*_real_*
+keys/local/
+
+# ---- 运行期数据 ----
+logs/
+*.log
+cards/
+*.ini
+
+# ---- 手工/临时脚本（一次性补丁工具） ----
+build_out.txt
+modify_wy_*.ps1
+_*.py
+startup_trace.log
+
+# ---- 论坛推广帖（不属于仓库内容） ----
+PeanutWLYZ_风格*_DZ论坛帖子.txt
+
+# 未在代码中引用的截图（论坛配图，不随仓库发布）
+1.png

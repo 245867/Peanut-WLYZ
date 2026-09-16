@@ -1,0 +1,53 @@
+// ============================================================
+// Peanut WLYZ — Resource Script
+// ============================================================
+#pragma code_page(65001)
+
+#include "resource.h"
+#include <windows.h>
+
+// Settings dialog (fallback; primary UI is created in code)
+IDD_SETTINGS DIALOGEX 0, 0, 400, 320
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Settings"
+FONT 9, "Microsoft YaHei"
+BEGIN
+    GROUPBOX    "Server", IDC_STATIC, 10, 10, 380, 80
+    LTEXT       "Host:", IDC_STATIC, 20, 28, 60, 14
+    EDITTEXT    IDC_EDIT_HOST, 90, 26, 120, 14, ES_AUTOHSCROLL
+    LTEXT       "Port:", IDC_STATIC, 220, 28, 30, 14
+    EDITTEXT    IDC_EDIT_PORT, 250, 26, 50, 14, ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT       "HMAC Key:", IDC_STATIC, 20, 48, 60, 14
+    EDITTEXT    IDC_EDIT_HMAC_KEY, 90, 46, 280, 14, ES_AUTOHSCROLL
+
+    GROUPBOX    "WY-Cipher Key", IDC_STATIC, 10, 100, 380, 55
+    EDITTEXT    IDC_EDIT_AES_KEY, 20, 118, 260, 14, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON  "Copy", IDC_BTN_COPY_AES, 290, 117, 40, 16
+    PUSHBUTTON  "Generate", IDC_BTN_GEN_AES, 335, 117, 50, 16
+
+    GROUPBOX    "PSP Key", IDC_STATIC, 10, 162, 380, 55
+    EDITTEXT    IDC_EDIT_PSP_KEY, 20, 180, 260, 14, ES_AUTOHSCROLL | ES_READONLY
+    PUSHBUTTON  "Copy", IDC_BTN_COPY_PSP, 290, 179, 40, 16
+    PUSHBUTTON  "Generate", IDC_BTN_GEN_PSP, 335, 179, 50, 16
+
+    GROUPBOX    "Plugin", IDC_STATIC, 10, 224, 380, 45
+    LTEXT       "Directory:", IDC_STATIC, 20, 242, 60, 14
+    EDITTEXT    IDC_EDIT_PLUGIN_DIR, 90, 240, 200, 14, ES_AUTOHSCROLL
+    PUSHBUTTON  "Browse...", IDC_BTN_BROWSE_PLUGIN, 295, 239, 40, 16
+
+    PUSHBUTTON  "Save", IDC_BTN_SAVE, 230, 290, 70, 24
+    PUSHBUTTON  "Cancel", IDC_BTN_CANCEL, 310, 290, 70, 24
+END
+
+IDD_ABOUT DIALOGEX 0, 0, 300, 160
+STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About Peanut WLYZ"
+FONT 9, "Microsoft YaHei"
+BEGIN
+    ICON        IDI_APPLICATION, IDC_STATIC, 20, 20, 32, 32
+    LTEXT       "Peanut WLYZ Card Manager v5.0", IDC_STATIC, 65, 25, 200, 16
+    LTEXT       "Native Win32 rebuild", IDC_STATIC, 65, 45, 200, 14
+    LTEXT       "PeanutSecure Protocol v2.0 (WY crypto)", IDC_STATIC, 65, 65, 200, 14
+    LTEXT       "Copyright 2026. All rights reserved.", IDC_STATIC, 65, 85, 200, 12
+    DEFPUSHBUTTON "OK", IDOK, 110, 125, 80, 24
+END

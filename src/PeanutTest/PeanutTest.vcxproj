@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{B2C3D4E5-2345-6789-ABCD-EF0123456789}</ProjectGuid>
+    <RootNamespace>PeanutTest</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v142</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'">
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)..\..\bin\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)..\..\bin\obj\$(ProjectName)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <AdditionalIncludeDirectories>$(MSBuildProjectDirectory)\..\PeanutClient;$(MSBuildProjectDirectory)\..\PeanutClient\crypto;$(MSBuildProjectDirectory)\..\PeanutClient\api;$(MSBuildProjectDirectory)\..\PeanutClient\util;$(MSBuildProjectDirectory)\..\PeanutClient\protocol;$(MSBuildProjectDirectory)\..\PeanutClient\plugin;$(MSBuildProjectDirectory)\..\PeanutClient\sdk;$(MSBuildProjectDirectory)\..\PeanutClient\transport;$(MSBuildProjectDirectory)\..\..\vendor;$(MSBuildProjectDirectory)\..\..\vendor\nlohmann;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Condition="'$(Configuration)'=='Debug'">
+      <Optimization>Disabled</Optimization>
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+      <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Condition="'$(Configuration)'=='Release'">
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation Condition="'$(Configuration)'=='Debug'">true</GenerateDebugInformation>
+      <GenerateDebugInformation Condition="'$(Configuration)'=='Release'">false</GenerateDebugInformation>
+      <StackReserveSize>16777216</StackReserveSize>
+      <AdditionalDependencies>Crypt32.lib;Iphlpapi.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="test_framework.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="protocol_test.cpp" />
+    <ClCompile Include="..\PeanutClient\crypto\wy_random.cpp" />
+    <ClCompile Include="..\PeanutClient\crypto\wy_hash.cpp" />
+    <ClCompile Include="..\PeanutClient\crypto\wy_cipher.cpp" />
+    <ClCompile Include="..\PeanutClient\crypto\wy_rsa.cpp" />
+    <ClCompile Include="..\PeanutClient\crypto\key_files.cpp" />
+    <ClCompile Include="..\PeanutClient\api\client_api.cpp" />
+    <ClCompile Include="..\PeanutClient\util\util.cpp" />
+    <ClCompile Include="..\PeanutClient\protocol\shadow_tunnel.cpp" />
+    <ClCompile Include="..\PeanutClient\sdk\peanut_secure_client.cpp" />
+
+    <ClCompile Include="..\PeanutClient\sdk\anti_debug.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_iat.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_sandbox.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_veh.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_registry.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_stack.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_memory.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_tls.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_pe.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
+
+

@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>16.0</VCProjectVersion>
+    <ProjectGuid>{D1E2F3A4-B5C6-7890-ABCD-EF123456789C}</ProjectGuid>
+    <RootNamespace>ClientDemo3</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v142</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)..\bin\Release\</OutDir>
+    <IntDir>$(ProjectDir)..\bin\obj\$(ProjectName)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile><WarningLevel>Level3</WarningLevel><SDLCheck>true</SDLCheck>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <PreprocessorDefinitions Condition="'$(VMProtectSDKDir)'!=''">VM_PROTECT_ACTIVE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories Condition="'$(VMProtectSDKDir)'!=''">$(VMProtectSDKDir)\Include;$(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\PeanutClient;$(ProjectDir)..\PeanutClient\crypto;$(ProjectDir)..\PeanutClient\api;$(ProjectDir)..\PeanutClient\util;$(ProjectDir)..\PeanutClient\protocol;$(ProjectDir)..\PeanutClient\sdk;$(ProjectDir)..\..\vendor;$(ProjectDir)..\..\vendor\nlohmann;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link><SubSystem>Console</SubSystem><GenerateDebugInformation>false</GenerateDebugInformation>
+      <AdditionalDependencies>Crypt32.lib;Iphlpapi.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies Condition="'$(VMProtectSDKDir)'!=''">VMProtectSDK64.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories Condition="'$(VMProtectSDKDir)'!=''">$(VMProtectSDKDir)\Lib\Windows;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(VMProtectSDKDir)'!=''">
+    <ClCompile>
+      <PreprocessorDefinitions>VM_PROTECT_ACTIVE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>$(VMProtectSDKDir)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>VMProtectSDK64.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(VMProtectSDKDir)\Lib\Windows;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="main.cpp" />
+    <ClCompile Include="..\PeanutClient\crypto\wy_random.cpp" />
+    <ClCompile Include="..\PeanutClient\crypto\wy_hash.cpp" />
+    <ClCompile Include="..\PeanutClient\crypto\wy_cipher.cpp" />
+    <ClCompile Include="..\PeanutClient\crypto\wy_rsa.cpp" />
+    <ClCompile Include="..\PeanutClient\crypto\key_files.cpp" />
+    <ClCompile Include="..\PeanutClient\api\client_api.cpp" />
+    <ClCompile Include="..\PeanutClient\util\util.cpp" />
+    <ClCompile Include="..\PeanutClient\protocol\shadow_tunnel.cpp" />
+    <ClCompile Include="..\PeanutClient\sdk\peanut_secure_client.cpp" />
+
+    <ClCompile Include="..\PeanutClient\sdk\anti_debug.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_iat.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_sandbox.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_veh.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_registry.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_stack.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_memory.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_tls.cpp" />
+    <ClCompile Include="..\\PeanutClient\\sdk\\anti_pe.cpp" />
+    <ClCompile Include="..\PeanutClient\sdk\security_runtime.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
