@@ -21,16 +21,23 @@
 #define WM_CLIENT_UPDATE       (WM_APP + 4)
 
 // 暗影主题：深炭 + 珊瑚强调
-static constexpr COLORREF BG_ROOT   = RGB(24, 26, 32);
-static constexpr COLORREF BG_PANEL  = RGB(36, 40, 48);
-static constexpr COLORREF BG_INPUT  = RGB(42, 46, 56);
-static constexpr COLORREF BG_BTN    = RGB(52, 58, 70);
-static constexpr COLORREF ACCENT    = RGB(90, 160, 255);
-static constexpr COLORREF ACCENT2   = RGB(120, 180, 255);
-static constexpr COLORREF GREEN     = RGB(72, 200, 130);
-static constexpr COLORREF TEXT_W    = RGB(245, 247, 250);
-static constexpr COLORREF TEXT_DIM  = RGB(180, 186, 196);
-static constexpr COLORREF BORDER_C  = RGB(70, 76, 90);
+// ── 设计 token：极夜霓虹 Aurora（与 PeanutGUI --skin=1 完全同一套设计）──
+//    深空蓝三级表面 + 霓虹青强调 + 柔和描边（cardBorderAlpha 0.20）
+static constexpr COLORREF BG_ROOT   = RGB(9, 12, 21);      // bgDeep   深空底
+static constexpr COLORREF BG_PANEL  = RGB(27, 35, 55);     // bgCard   卡片面
+static constexpr COLORREF BG_INPUT  = RGB(19, 25, 42);     // bgInput  输入面
+static constexpr COLORREF BG_BTN    = RGB(41, 52, 79);     // bgHover  按钮面
+static constexpr COLORREF BTN_PRESS = RGB(35, 45, 68);     // bgElevated 按下态
+static constexpr COLORREF ACCENT    = RGB(34, 211, 238);   // accent      霓虹青
+static constexpr COLORREF ACCENT2   = RGB(103, 232, 249);  // accentGlow  发光青
+static constexpr COLORREF GREEN     = RGB(52, 211, 153);   // success
+static constexpr COLORREF TEXT_W    = RGB(233, 238, 248);  // textPrimary
+static constexpr COLORREF TEXT_DIM  = RGB(150, 163, 194);  // textSecondary
+static constexpr COLORREF CARD_LINE = RGB(30, 39, 60);     // border × 0.20 卡片柔和描边
+static constexpr COLORREF BORDER_C  = RGB(42, 54, 82);     // border 控件描边
+static constexpr int CARD_RADIUS = 13;                     // cardRadius
+static constexpr int BTN_RADIUS  = 8;                      // btnRadius
+static constexpr int ACCENT_BAR  = 3;                      // accentBarW 强调线宽
 
 struct ClientState {
     std::string host = "127.0.0.1";
@@ -275,22 +282,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_brInput = CreateSolidBrush(BG_INPUT);
         {
             LOGFONTW lf = { 17, 0, 0, 0, FW_NORMAL };
-            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei");
+            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei UI");
             g_font = CreateFontIndirectW(&lf);
         }
         {
             LOGFONTW lf = { 20, 0, 0, 0, FW_SEMIBOLD };
-            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei");
+            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei UI");
             g_fontBig = CreateFontIndirectW(&lf);
         }
         {
             LOGFONTW lf = { 22, 0, 0, 0, FW_BOLD };
-            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei");
+            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei UI");
             g_fontTitle = CreateFontIndirectW(&lf);
         }
         {
             LOGFONTW lf = { 18, 0, 0, 0, FW_NORMAL };
-            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei");
+            wcscpy_s(lf.lfFaceName, L"Consolas");
             g_fontMono = CreateFontIndirectW(&lf);
         }
 
@@ -304,7 +311,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // 顶栏
         HWND hTitle = ctl(L"STATIC", L"暗影守护者", SS_LEFT, 28, 18, 280, 28, -1);
         SendMessage(hTitle, WM_SETFONT, (WPARAM)g_fontTitle, TRUE);
-        ctl(L"STATIC", L"Peanut Secure Client  ·  Demo 1", SS_LEFT, 28, 48, 320, 20, -1);
+        ctl(L"STATIC", L"Peanut Secure Client  ·  Demo 1  ·  极夜霓虹", SS_LEFT, 28, 48, 420, 20, -1);
         g_hStatus = ctl(L"STATIC", L"●  未连接", SS_RIGHT, 400, 28, 200, 24, -1);
 
         // 状态信息卡
@@ -379,10 +386,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (!dis || dis->CtlType != ODT_BUTTON) break;
         bool pressed = (dis->itemState & ODS_SELECTED) != 0;
         bool isAct = (dis->CtlID == 1002);
-        COLORREF bg = pressed ? RGB(48, 54, 68) : (isAct ? ACCENT : BG_BTN);
+        COLORREF bg = pressed ? BTN_PRESS : (isAct ? ACCENT : BG_BTN);
         COLORREF fg = isAct ? RGB(255, 255, 255) : TEXT_W;
         COLORREF bd = isAct ? ACCENT2 : BORDER_C;
-        DrawRoundRect(dis->hDC, dis->rcItem, bg, bd, 6);
+        DrawRoundRect(dis->hDC, dis->rcItem, bg, bd, BTN_RADIUS);
         wchar_t txt[32] = {};
         GetWindowTextW(dis->hwndItem, txt, 32);
         SetBkMode(dis->hDC, TRANSPARENT);
@@ -478,8 +485,8 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         GetClientRect(hwnd, &rc);
         FillRect(hdc, &rc, g_brRoot);
 
-        // 顶部分割线
-        HPEN pen = CreatePen(PS_SOLID, 2, ACCENT);
+        // 顶部分割线（Aurora：3px 霓虹强调线）
+        HPEN pen = CreatePen(PS_SOLID, ACCENT_BAR, ACCENT);
         HGDIOBJ old = SelectObject(hdc, pen);
         MoveToEx(hdc, 28, 78, nullptr);
         LineTo(hdc, rc.right - 28, 78);
@@ -488,15 +495,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // 信息卡背景
         RECT card1 = { 28, 90, rc.right - 28, 198 };
-        DrawRoundRect(hdc, card1, BG_PANEL, BORDER_C, 10);
+        DrawRoundRect(hdc, card1, BG_PANEL, CARD_LINE, CARD_RADIUS);
 
         // 登录区背景
         RECT card2 = { 28, 210, rc.right - 28, 280 };
-        DrawRoundRect(hdc, card2, BG_PANEL, BORDER_C, 10);
+        DrawRoundRect(hdc, card2, BG_PANEL, CARD_LINE, CARD_RADIUS);
 
         // 调用区背景
         RECT card3 = { 28, 292, rc.right - 28, 354 };
-        DrawRoundRect(hdc, card3, BG_PANEL, BORDER_C, 10);
+        DrawRoundRect(hdc, card3, BG_PANEL, CARD_LINE, CARD_RADIUS);
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -539,7 +546,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
 
     RECT r = { 0, 0, 620, 680 };
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX & ~WS_THICKFRAME, FALSE);
-    HWND hwnd = CreateWindowEx(0, L"PeanutClientDemo1", L"Peanut · 暗影守护者",
+    HWND hwnd = CreateWindowEx(0, L"PeanutClientDemo1", L"Peanut · 暗影守护者  ·  极夜霓虹",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
         nullptr, nullptr, hInst, nullptr);

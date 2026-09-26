@@ -21,17 +21,24 @@
 #define WM_CLIENT_UPDATE       (WM_APP + 4)
 
 // 监控面板：深蓝黑 + 青色强调
-static constexpr COLORREF BG_ROOT   = RGB(22, 26, 34);
-static constexpr COLORREF BG_CARD   = RGB(34, 40, 52);
-static constexpr COLORREF BG_INPUT  = RGB(40, 46, 58);
-static constexpr COLORREF ACCENT    = RGB(80, 180, 220);
-static constexpr COLORREF ACCENT2   = RGB(100, 200, 230);
-static constexpr COLORREF GREEN     = RGB(52, 211, 153);
-static constexpr COLORREF YELLOW    = RGB(251, 191, 36);
-static constexpr COLORREF TEXT_W    = RGB(245, 248, 252);
-static constexpr COLORREF TEXT_DIM  = RGB(170, 180, 195);
-static constexpr COLORREF BORDER_C  = RGB(60, 70, 88);
-static constexpr COLORREF BG_BTN    = RGB(48, 56, 72);
+// ── 设计 token：熔岩黑 Magma（与 PeanutGUI --skin=3 完全同一套设计）──
+//    纯黑硬朗 + 熔岩橙红强调 + 低圆角直角风（cardBorderAlpha 0.32）
+static constexpr COLORREF BG_ROOT   = RGB(9, 9, 11);       // bgDeep   纯黑
+static constexpr COLORREF BG_CARD   = RGB(26, 20, 21);     // bgCard   炭红面
+static constexpr COLORREF BG_INPUT  = RGB(17, 14, 15);     // bgInput
+static constexpr COLORREF ACCENT    = RGB(255, 107, 53);   // accent      熔岩橙
+static constexpr COLORREF ACCENT2   = RGB(255, 46, 99);    // accent2     熔岩红
+static constexpr COLORREF GREEN     = RGB(74, 222, 128);   // success
+static constexpr COLORREF YELLOW    = RGB(250, 204, 21);   // warning
+static constexpr COLORREF TEXT_W    = RGB(245, 241, 240);  // textPrimary
+static constexpr COLORREF TEXT_DIM  = RGB(172, 160, 156);  // textSecondary
+static constexpr COLORREF CARD_LINE = RGB(39, 27, 26);     // border × 0.32 卡片描边
+static constexpr COLORREF BORDER_C  = RGB(66, 43, 37);     // border 控件描边
+static constexpr COLORREF BG_BTN    = RGB(48, 30, 27);     // bgHover
+static constexpr COLORREF BTN_PRESS = RGB(58, 27, 20);     // accentSoft  按下态
+static constexpr int CARD_RADIUS = 7;                      // cardRadius
+static constexpr int BTN_RADIUS  = 5;                      // btnRadius
+static constexpr int ACCENT_BAR  = 3;                      // accentBarW 强调线宽
 
 struct ClientState {
     std::string host = "127.0.0.1";
@@ -272,22 +279,22 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_brInput = CreateSolidBrush(BG_INPUT);
         {
             LOGFONTW lf = { 17, 0, 0, 0, FW_NORMAL };
-            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei");
+            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei UI");
             g_font = CreateFontIndirectW(&lf);
         }
         {
             LOGFONTW lf = { 22, 0, 0, 0, FW_BOLD };
-            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei");
+            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei UI");
             g_fontBig = CreateFontIndirectW(&lf);
         }
         {
             LOGFONTW lf = { 22, 0, 0, 0, FW_BOLD };
-            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei");
+            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei UI");
             g_fontTitle = CreateFontIndirectW(&lf);
         }
         {
             LOGFONTW lf = { 18, 0, 0, 0, FW_NORMAL };
-            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei");
+            wcscpy_s(lf.lfFaceName, L"Consolas");
             g_fontMono = CreateFontIndirectW(&lf);
         }
 
@@ -300,7 +307,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         HWND hTitle = ctl(L"STATIC", L"监控面板", SS_LEFT, 24, 14, 200, 28, -1);
         SendMessage(hTitle, WM_SETFONT, (WPARAM)g_fontTitle, TRUE);
-        ctl(L"STATIC", L"Peanut Secure Client  ·  Demo 3", SS_LEFT, 24, 44, 320, 18, -1);
+        ctl(L"STATIC", L"Peanut Secure Client  ·  Demo 3  ·  熔岩黑", SS_LEFT, 24, 44, 420, 18, -1);
 
         // 4 指标卡
         const wchar_t* titles[] = { L"连接状态", L"卡密状态", L"使用时长", L"剩余时间" };
@@ -381,10 +388,10 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (!dis || dis->CtlType != ODT_BUTTON) break;
         bool pressed = (dis->itemState & ODS_SELECTED) != 0;
         bool isAct = (dis->CtlID == 1002);
-        COLORREF bg = pressed ? RGB(36, 52, 74) : (isAct ? RGB(0, 140, 190) : BG_BTN);
+        COLORREF bg = pressed ? BTN_PRESS : (isAct ? ACCENT : BG_BTN);
         COLORREF fg = isAct ? RGB(255, 255, 255) : TEXT_W;
         COLORREF bd = isAct ? ACCENT : BORDER_C;
-        DrawRoundRect(dis->hDC, dis->rcItem, bg, bd, 6);
+        DrawRoundRect(dis->hDC, dis->rcItem, bg, bd, BTN_RADIUS);
         wchar_t txt[32] = {};
         GetWindowTextW(dis->hwndItem, txt, 32);
         SetBkMode(dis->hDC, TRANSPARENT);
@@ -478,19 +485,20 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         GetClientRect(hwnd, &rc);
         FillRect(hdc, &rc, g_brRoot);
 
-        HPEN pen = CreatePen(PS_SOLID, 2, ACCENT);
+        // 顶部分割线（Magma：3px 熔岩强调线）
+        HPEN pen = CreatePen(PS_SOLID, ACCENT_BAR, ACCENT);
         HGDIOBJ old = SelectObject(hdc, pen);
         MoveToEx(hdc, 24, 70, nullptr);
         LineTo(hdc, rc.right - 24, 70);
         SelectObject(hdc, old);
         DeleteObject(pen);
 
-        // 4 指标卡背景
+        // 4 指标卡背景（熔岩四色：橙 / 绿 / 黄 / 洋红）
         COLORREF accents[] = { ACCENT, GREEN, YELLOW, ACCENT2 };
         for (int i = 0; i < 4; i++) {
             int xp = 24 + i * 162;
             RECT tile = { xp, 78, xp + 152, 156 };
-            DrawRoundRect(hdc, tile, BG_CARD, BORDER_C, 10);
+            DrawRoundRect(hdc, tile, BG_CARD, CARD_LINE, CARD_RADIUS);
             // 顶部色条
             HBRUSH bar = CreateSolidBrush(accents[i]);
             RECT barRc = { xp + 2, 78, xp + 150, 82 };
@@ -500,11 +508,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
         // 登录区
         RECT login = { 24, 192, rc.right - 24, 246 };
-        DrawRoundRect(hdc, login, BG_CARD, BORDER_C, 10);
+        DrawRoundRect(hdc, login, BG_CARD, CARD_LINE, CARD_RADIUS);
 
         // 调用区
         RECT call = { 24, 254, rc.right - 24, 288 };
-        DrawRoundRect(hdc, call, BG_CARD, BORDER_C, 8);
+        DrawRoundRect(hdc, call, BG_CARD, CARD_LINE, CARD_RADIUS);
 
         EndPaint(hwnd, &ps);
         return 0;
@@ -547,7 +555,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE, LPSTR, int nCmd) {
 
     RECT r = { 0, 0, 640, 610 };
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX & ~WS_THICKFRAME, FALSE);
-    HWND hwnd = CreateWindowEx(0, L"PeanutClientDemo3", L"Peanut · 监控面板",
+    HWND hwnd = CreateWindowEx(0, L"PeanutClientDemo3", L"Peanut · 监控面板  ·  熔岩黑",
         WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
         CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top,
         nullptr, nullptr, hInst, nullptr);
