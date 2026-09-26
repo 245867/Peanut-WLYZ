@@ -24,7 +24,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                        _In_ int       nCmdShow)
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
-    UNREFERENCED_PARAMETER(lpCmdLine);
+
+    // ── 选择界面皮肤 ─────────────────────────────────────────
+    // 优先级: 命令行 --skin=N  >  环境变量 PEANUT_SKIN  >  默认 1
+    //   1 = 极夜霓虹   2 = 晨曦白   3 = 熔岩黑
+    {
+        int skinId = peanut::ui::UiSkin_ParseCommandLine(lpCmdLine);
+        if (skinId <= 0) skinId = peanut::ui::UiSkin_ParseEnv();
+        if (skinId <= 0) skinId = 1;
+        peanut::ui::UiSkin_Load(skinId);
+    }
 
     // Layer 0: 反调试入口守卫 (SDK, Release-only)
     peanut::security::antidebug::StartupGuard();

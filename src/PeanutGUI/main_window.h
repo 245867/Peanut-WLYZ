@@ -19,12 +19,14 @@
 #include <vector>
 #include <functional>
 #include <memory>
+#include <unordered_map>
 #include <chrono>
 #include <mutex>
 #include <map>
 #include <httplib.h>
 
 #include "resource.h"
+#include "ui_skin.h"
 #include "../PeanutClient/protocol/shadow_tunnel.h"
 #include "../PeanutClient/api/client_api.h"
 #include "../PeanutClient/sdk/peanut_secure_client.h"
@@ -33,42 +35,47 @@
 //  深色专业主题颜色常量
 // ═══════════════════════════════════════════════════════════
 namespace peanut_theme {
-    // 暗黑背景（炭黑）
-    constexpr COLORREF BG_DEEP       = RGB(14,  14,  16);   // 主背景
-    constexpr COLORREF BG_SIDEBAR    = RGB(20,  20,  24);   // 顶栏/底栏
-    constexpr COLORREF BG_TOPNAV     = RGB(20,  20,  24);
-    constexpr COLORREF BG_LOG        = RGB(18,  18,  22);   // 全局日志
-    constexpr COLORREF BG_CARD       = RGB(30,  32,  38);   // 卡片（略提亮，避免死黑）
-    constexpr COLORREF BG_INPUT      = RGB(26,  28,  34);   // 列表/输入
-    constexpr COLORREF BG_HEADER     = RGB(34,  36,  44);   // 表头
-    constexpr COLORREF BG_HOVER      = RGB(40,  42,  52);
+    // 全部映射到运行时皮肤 (peanut::ui::g_skin)，切换皮肤即刻生效
+    inline const COLORREF& BG_DEEP       = peanut::ui::g_skin.bgDeep;
+    inline const COLORREF& BG_SIDEBAR    = peanut::ui::g_skin.bgTopNav;
+    inline const COLORREF& BG_TOPNAV     = peanut::ui::g_skin.bgTopNav;
+    inline const COLORREF& BG_LOG        = peanut::ui::g_skin.bgLog;
+    inline const COLORREF& BG_CARD       = peanut::ui::g_skin.bgCard;
+    inline const COLORREF& BG_INPUT      = peanut::ui::g_skin.bgInput;
+    inline const COLORREF& BG_HEADER     = peanut::ui::g_skin.bgHeader;
+    inline const COLORREF& BG_HOVER      = peanut::ui::g_skin.bgHover;
 
-    constexpr COLORREF ACCENT        = RGB(220, 70,  90);
-    constexpr COLORREF ACCENT_DIM    = RGB(160, 45,  65);
-    constexpr COLORREF ACCENT_GLOW   = RGB(255, 100, 120);
+    inline const COLORREF& ACCENT        = peanut::ui::g_skin.accent;
+    inline const COLORREF& ACCENT_DIM    = peanut::ui::g_skin.accentDim;
+    inline const COLORREF& ACCENT_GLOW   = peanut::ui::g_skin.accentGlow;
 
-    constexpr COLORREF TEXT_PRIMARY  = RGB(228, 230, 235);
-    constexpr COLORREF TEXT_SECONDARY= RGB(148, 152, 162);
-    constexpr COLORREF TEXT_MUTED    = RGB(100, 104, 114);
+    inline const COLORREF& TEXT_PRIMARY  = peanut::ui::g_skin.textPrimary;
+    inline const COLORREF& TEXT_SECONDARY= peanut::ui::g_skin.textSecondary;
+    inline const COLORREF& TEXT_MUTED    = peanut::ui::g_skin.textMuted;
 
-    constexpr COLORREF SUCCESS       = RGB(70,  190, 120);
-    constexpr COLORREF WARNING       = RGB(230, 180, 60);
-    constexpr COLORREF ERROR_COLOR   = RGB(230, 70,  80);
-    constexpr COLORREF INFO          = RGB(80,  160, 230);
+    inline const COLORREF& SUCCESS       = peanut::ui::g_skin.success;
+    inline const COLORREF& WARNING       = peanut::ui::g_skin.warning;
+    inline const COLORREF& ERROR_COLOR   = peanut::ui::g_skin.danger;
+    inline const COLORREF& INFO          = peanut::ui::g_skin.info;
 
-    // 边框用近黑，避免发白
-    constexpr COLORREF BORDER        = RGB(8,   8,   10);
-    constexpr COLORREF DIVIDER       = RGB(16,  16,  20);
+    inline const COLORREF& BORDER        = peanut::ui::g_skin.border;
+    inline const COLORREF& DIVIDER       = peanut::ui::g_skin.divider;
 
-    inline Gdiplus::Color GpBg()        { return Gdiplus::Color(14,  14,  16); }
-    inline Gdiplus::Color GpSidebar()   { return Gdiplus::Color(20,  20,  24); }
-    inline Gdiplus::Color GpTopNav()    { return Gdiplus::Color(20,  20,  24); }
-    inline Gdiplus::Color GpCard()      { return Gdiplus::Color(30,  32,  38); }
-    inline Gdiplus::Color GpAccent()    { return Gdiplus::Color(220, 70,  90); }
-    inline Gdiplus::Color GpText()      { return Gdiplus::Color(228, 230, 235); }
-    inline Gdiplus::Color GpSuccess()   { return Gdiplus::Color(70,  190, 120); }
-    inline Gdiplus::Color GpError()     { return Gdiplus::Color(230, 70,  80); }
-    inline Gdiplus::Color GpBorder()    { return Gdiplus::Color(8,   8,   10); }
+    // 第二强调色 / 卡片渐变末端（新增，供美化绘制使用）
+    inline const COLORREF& ACCENT2       = peanut::ui::g_skin.accent2;
+    inline const COLORREF& BG_CARD2      = peanut::ui::g_skin.bgCard2;
+    inline const COLORREF& BG_TOPNAV2    = peanut::ui::g_skin.bgTopNav2;
+    inline const COLORREF& BG_DEEP2      = peanut::ui::g_skin.bgDeep2;
+
+    inline Gdiplus::Color GpBg()        { return peanut::ui::Gp(BG_DEEP); }
+    inline Gdiplus::Color GpSidebar()   { return peanut::ui::Gp(BG_SIDEBAR); }
+    inline Gdiplus::Color GpTopNav()    { return peanut::ui::Gp(BG_TOPNAV); }
+    inline Gdiplus::Color GpCard()      { return peanut::ui::Gp(BG_CARD); }
+    inline Gdiplus::Color GpAccent()    { return peanut::ui::Gp(ACCENT); }
+    inline Gdiplus::Color GpText()      { return peanut::ui::Gp(TEXT_PRIMARY); }
+    inline Gdiplus::Color GpSuccess()   { return peanut::ui::Gp(SUCCESS); }
+    inline Gdiplus::Color GpError()     { return peanut::ui::Gp(ERROR_COLOR); }
+    inline Gdiplus::Color GpBorder()    { return peanut::ui::Gp(BORDER); }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -159,10 +166,10 @@ struct StatCard {
     HWND        hwndPanel = nullptr;
     HWND        hwndTitle = nullptr;
     HWND        hwndValue = nullptr;
-    HWND        hwndIcon  = nullptr;
+    HWND        hwndSub   = nullptr;   // 副文本行
     const wchar_t* title = L"";
-    const wchar_t* subtext = L"";
-    const wchar_t* iconGlyph = L"";  // 展示用符号
+    std::wstring subtext;              // 副文本（随数据动态刷新）
+    const wchar_t* iconGlyph = L"";    // 矢量图标名: cards / bolt / server / wifi
     std::wstring value;
     COLORREF    accentColor = RGB(220, 70, 90);
     int         iconKind = 0;  // 0钥匙 1闪电 2服务器 3网络
@@ -249,7 +256,14 @@ private:
     // 窗口过程
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
     static LRESULT CALLBACK NavBtnProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
-                                        UINT_PTR idSubclass, DWORD_PTR refData);
+        UINT_PTR idSubclass, DWORD_PTR refData);
+    static LRESULT CALLBACK BtnHoverProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+        UINT_PTR idSubclass, DWORD_PTR refData);
+    static LRESULT CALLBACK EditBorderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+        UINT_PTR idSubclass, DWORD_PTR refData);
+    // 卡密列表行悬停高亮（仅处理鼠标消息，不接管绘制）
+    static LRESULT CALLBACK ListHoverProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+        UINT_PTR idSubclass, DWORD_PTR refData);
     static LRESULT CALLBACK DarkParentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                             UINT_PTR idSubclass, DWORD_PTR refData);
     static LRESULT CALLBACK DarkHeaderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
@@ -381,9 +395,18 @@ private:
     HWND        hwndDashActivityList_   = nullptr;
     HWND        hwndDashRefreshBtn_     = nullptr;
     HWND        hwndDashGenerateBtn_    = nullptr;
-    HWND        hwndDashTitle_          = nullptr;
-    HWND        hwndDashSummary_        = nullptr;
     HWND        hwndDashQuickPanel_     = nullptr;
+    HWND        hwndDashQuickTitle_     = nullptr;
+    HWND        hwndDashQuickHint_      = nullptr;
+
+    // 仪表盘「运行概览」卡：3 列 × 2 行键值对，纯静态文本控件
+    static const int kOvCols = 3;
+    static const int kOvRows = 2;
+    HWND        hwndDashOverviewPanel_  = nullptr;
+    HWND        hwndDashOverviewTitle_  = nullptr;
+    HWND        hwndDashOverviewHint_   = nullptr;
+    HWND        hwndOvKey_[kOvCols * kOvRows] = {};
+    HWND        hwndOvVal_[kOvCols * kOvRows] = {};
 
     // 卡密管理
     HWND        hwndCardList_           = nullptr;
@@ -399,15 +422,21 @@ private:
     HWND        hwndCardGenerateBtn_    = nullptr;
     HWND        hwndCardDetailLog_      = nullptr;
     HWND        hwndCardSplitter_       = nullptr;
-    HWND        hwndCardTopLabel_       = nullptr;
     HWND        hwndCardBottomBtns_     = nullptr;
+    int         cardListHot_            = -1; // 悬停行（-1 = 无）
+
+    // 设置页滚动（内容高于可视区时用滚轮查看下方分组）
+    void ScrollSettings(int dyPx);
+    std::unordered_map<HWND, RECT> settBaseRect_;
+    HWND hwndSettBg_    = nullptr;   // 设置页背景板（固定）
+    int  settScrollY_   = 0;
+    int  settContentH_  = 0;
 
     // 插件中心
     HWND hwndPluginList_       = nullptr;
     HWND hwndPluginParamEdit_  = nullptr;
     HWND        hwndPluginRefreshBtn_   = nullptr;
     HWND        hwndPluginExecBtn_      = nullptr;
-    HWND        hwndPluginTitle_        = nullptr;
 
     // 日志
     HWND        hwndLogEdit_            = nullptr;
@@ -431,7 +460,6 @@ private:
     HWND hwndSettFwBanEdit_    = nullptr;
     HWND        hwndFwIpList_          = nullptr;
     HWND        hwndFwRuleCard_         = nullptr;
-    HWND        hwndFwTitle_            = nullptr;
     HWND        hwndFwListTitle_        = nullptr;
     HWND hwndSettHmacEdit_  = nullptr;
     HWND        hwndSettAesEdit_        = nullptr;
@@ -468,6 +496,10 @@ private:
     HFONT       hFontHeader_            = nullptr;  // 列表表头
     HFONT       hFontSectionTitle_      = nullptr;
     HFONT       hFontCardKey_           = nullptr;  // 卡密列等宽字体，保证视觉长度一致
+    HFONT       hFontNav_               = nullptr;  // 导航项（半粗）
+    HFONT       hFontBrand_             = nullptr;  // 品牌名
+    HFONT       hFontBadge_             = nullptr;  // 徽章 / 小标签
+    HFONT       hFontStatSub_           = nullptr;  // KPI 卡片副文本
 
     // GDI+
     ULONG_PTR   gdiplusToken_           = 0;
@@ -534,14 +566,14 @@ private:
     void RecordUnbind(const std::string& cardkey);
 
     // 布局
-    int         clientW_ = 1200, clientH_ = 800;
+    int         clientW_ = 896, clientH_ = 672;
     static constexpr int TOP_NAV_H = 48;
     int         contentX_ = 0;
     int         contentY_ = TOP_NAV_H;
-    int         contentW_ = 1200;
-    int         contentH_ = 420;
-    int         statusBarH_ = 28;
-    int         globalLogH_ = 368;     // 全局日志（默认加高）
+    int         contentW_ = 896;
+    int         contentH_ = 371;
+    int         statusBarH_ = 30;
+    int         globalLogH_ = 216;     // 全局日志（底部停靠，可拖拽调整）
     int         splitterPos_ = 280;    // 卡密列表/详情分割位置
     int         splitterH_ = 6;
     bool        draggingSplitter_ = false;

@@ -76,6 +76,8 @@
     <ClInclude Include="main.h" />
     <ClInclude Include="main_window.h" />
     <ClInclude Include="tcp_server.h" />
+    <ClInclude Include="ui_skin.h" />
+    <ClInclude Include="ui_icons.h" />
     <ClInclude Include="win32_controls.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
@@ -84,6 +86,8 @@
     <ClCompile Include="main.cpp" />
     <ClCompile Include="main_window.cpp" />
     <ClCompile Include="tcp_server.cpp" />
+    <ClCompile Include="ui_skin.cpp" />
+    <ClCompile Include="ui_icons.cpp" />
     <ClCompile Include="..\PeanutClient\crypto\wy_random.cpp" />
     <ClCompile Include="..\PeanutClient\crypto\wy_hash.cpp" />
     <ClCompile Include="..\PeanutClient\crypto\wy_cipher.cpp" />

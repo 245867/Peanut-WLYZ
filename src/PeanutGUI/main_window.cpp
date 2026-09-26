@@ -7,6 +7,7 @@
 #include "win32_controls.h"
 #include "card_dialogs.h"
 #include "tcp_server.h"
+#include "ui_icons.h"
 #include "../PeanutClient/sdk/anti_debug.h"
 
 #include <windowsx.h>
@@ -99,6 +100,432 @@ static HWND CreateControl(const wchar_t* className, const wchar_t* text,
 }
 
 // ═══════════════════════════════════════════════════════════
+//  美化绘制辅助 (GDI+ 圆角 / 渐变)
+// ═══════════════════════════════════════════════════════════
+namespace {
+
+// 生成圆角矩形路径
+void GpRoundPath(GraphicsPath& path, const RectF& r, float radius) {
+    float d = radius * 2.0f;
+    if (d > r.Width)  d = r.Width;
+    if (d > r.Height) d = r.Height;
+    if (d < 2.0f) { path.AddRectangle(r); return; }
+    path.AddArc(r.X, r.Y, d, d, 180.0f, 90.0f);
+    path.AddArc(r.X + r.Width - d, r.Y, d, d, 270.0f, 90.0f);
+    path.AddArc(r.X + r.Width - d, r.Y + r.Height - d, d, d, 0.0f, 90.0f);
+    path.AddArc(r.X, r.Y + r.Height - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+// 圆角矩形填充（top==bottom 时纯色，否则垂直渐变）+ 可选描边
+void FillRoundRect(HDC hdc, const RECT& rc, float radius,
+                   COLORREF top, COLORREF bottom,
+                   bool border, COLORREF borderColor, float borderW) {
+    RectF r((REAL)rc.left, (REAL)rc.top,
+            (REAL)(rc.right - rc.left), (REAL)(rc.bottom - rc.top));
+    if (r.Width <= 0.0f || r.Height <= 0.0f) return;
+
+    Graphics g(hdc);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    GraphicsPath path;
+    GpRoundPath(path, r, radius);
+
+    Color c1 = peanut::ui::Gp(top), c2 = peanut::ui::Gp(bottom);
+    if (top == bottom) {
+        SolidBrush b(c1);
+        g.FillPath(&b, &path);
+    } else {
+        LinearGradientBrush b(r, c1, c2, LinearGradientModeVertical);
+        g.FillPath(&b, &path);
+    }
+    if (border) {
+        Pen p(peanut::ui::Gp(borderColor), borderW);
+        g.DrawPath(&p, &path);
+    }
+}
+
+// 垂直渐变填充（直角）
+void FillVGradient(HDC hdc, const RECT& rc, COLORREF top, COLORREF bottom) {
+    RectF r((REAL)rc.left, (REAL)rc.top,
+            (REAL)(rc.right - rc.left), (REAL)(rc.bottom - rc.top));
+    if (r.Width <= 0.0f || r.Height <= 0.0f) return;
+    Graphics g(hdc);
+    if (top == bottom) {
+        SolidBrush b(peanut::ui::Gp(top));
+        g.FillRectangle(&b, r);
+        return;
+    }
+    LinearGradientBrush b(r, peanut::ui::Gp(top), peanut::ui::Gp(bottom),
+                          LinearGradientModeVertical);
+    g.FillRectangle(&b, r);
+}
+
+// 水平渐变细线（用于强调分隔线）
+void FillHGradientLine(HDC hdc, const RECT& rc, COLORREF left, COLORREF right) {
+    RectF r((REAL)rc.left, (REAL)rc.top,
+            (REAL)(rc.right - rc.left), (REAL)(rc.bottom - rc.top));
+    if (r.Width <= 0.0f || r.Height <= 0.0f) return;
+    Graphics g(hdc);
+    LinearGradientBrush b(r, peanut::ui::Gp(left), peanut::ui::Gp(right),
+                          LinearGradientModeHorizontal);
+    g.FillRectangle(&b, r);
+}
+
+// ── 顶部导航栏高度（随皮肤变化）──────────────────────────
+inline int NavH() { return peanut::ui::g_skin.navHeight; }
+
+// 品牌区宽度：导航项从这里之后开始排布
+const int kNavBrandW = 166;
+
+// 展示型卡片为落影预留的内边距（卡片窗口比视觉卡片每侧大这么多）
+const int kCardPad = 16;
+
+// ── 柔和投影 ──────────────────────────────────────────────
+// 由外向内叠加低透明度圆角矩形，形成自然衰减的落影。
+// spread=扩散半径 dy=下偏移 alpha=边缘最大不透明度(0..1)
+void DrawSoftShadow(HDC hdc, const RECT& rc, float radius,
+                    int spread, int dy, float alpha) {
+    if (spread <= 0 || alpha <= 0.004f) return;
+    if (rc.right <= rc.left || rc.bottom <= rc.top) return;
+
+    Graphics g(hdc);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    for (int i = spread; i >= 1; --i) {
+        const float t = (float)i / (float)spread;      // 0=贴边 1=最外
+        const float a = alpha * (1.0f - t) * (1.0f - t);
+        if (a <= 0.004f) continue;
+
+        RECT r = rc;
+        r.left -= i; r.right += i;
+        r.top  -= i; r.bottom += i;
+        r.top  += dy; r.bottom += dy;
+
+        RectF rf((REAL)r.left, (REAL)r.top,
+                 (REAL)(r.right - r.left), (REAL)(r.bottom - r.top));
+        GraphicsPath path;
+        GpRoundPath(path, rf, radius + (float)i);
+        SolidBrush b(Color((BYTE)(a * 255.0f + 0.5f), 0, 0, 0));
+        g.FillPath(&b, &path);
+    }
+}
+
+// ── 卡片面（投影 + 圆角面 + 主题描边）────────────────────
+// elevated=true 使用抬升色（用于面板内的次级容器）
+void DrawCardFace(HDC hdc, const RECT& rcFull, float radius,
+                  bool shadow, bool elevated) {
+    const auto& sk = peanut::ui::g_skin;
+    if (radius < 0.0f) radius = sk.cardRadius;
+
+    RECT card = rcFull;
+    InflateRect(&card, -1, -1);
+    if (card.right <= card.left || card.bottom <= card.top) return;
+
+    if (shadow && sk.softShadow && sk.shadowAlpha > 0.004f)
+        DrawSoftShadow(hdc, card, radius, sk.shadowSpread, sk.shadowOffsetY, sk.shadowAlpha);
+
+    const COLORREF topC = elevated ? sk.bgElevated : sk.bgCard;
+    const COLORREF botC = elevated ? sk.bgElevated : sk.bgCard2;
+    const COLORREF brd  = peanut::ui::MixColor(sk.border, topC, 1.0f - sk.cardBorderAlpha);
+    FillRoundRect(hdc, card, radius, topC, botC, true, brd, 1.0f);
+}
+
+// ── 卡片强调条（在卡片圆角内裁切）────────────────────────
+// side: 0=顶部 1=左侧
+void DrawCardAccentBar(HDC hdc, const RECT& rcFull, float radius,
+                       int side, COLORREF c1, COLORREF c2, int thickness) {
+    RECT card = rcFull;
+    InflateRect(&card, -1, -1);
+    if (card.right <= card.left || card.bottom <= card.top) return;
+
+    Graphics g(hdc);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    RectF rf((REAL)card.left, (REAL)card.top,
+             (REAL)(card.right - card.left), (REAL)(card.bottom - card.top));
+    GraphicsPath clip;
+    GpRoundPath(clip, rf, radius);
+    g.SetClip(&clip);
+
+    if (side == 0) {
+        RectF bar(rf.X, rf.Y, rf.Width, (REAL)thickness);
+        LinearGradientBrush lb(bar, peanut::ui::Gp(c1), peanut::ui::Gp(c2),
+                               LinearGradientModeHorizontal);
+        g.FillRectangle(&lb, bar);
+    } else {
+        RectF bar(rf.X, rf.Y, (REAL)thickness, rf.Height);
+        LinearGradientBrush lb(bar, peanut::ui::Gp(c1), peanut::ui::Gp(c2, 70),
+                               LinearGradientModeVertical);
+        g.FillRectangle(&lb, bar);
+    }
+    g.ResetClip();
+}
+
+// ── 图标容器：柔光底 + 居中矢量图标 ──────────────────────
+void DrawIconChip(HDC hdc, const RECT& rc, const wchar_t* icon,
+                  float radius, float iconScale = 0.52f) {
+    const auto& sk = peanut::ui::g_skin;
+    FillRoundRect(hdc, rc, radius, sk.accentSoft, sk.accentSoft, false, 0, 0);
+
+    const int w = rc.right - rc.left, h = rc.bottom - rc.top;
+    const float side = (std::min)(w, h) * iconScale;
+    const float cx = rc.left + (w - side) * 0.5f;
+    const float cy = rc.top  + (h - side) * 0.5f;
+    Graphics g(hdc);
+    peanut::ui::DrawIcon(g, icon, RectF(cx, cy, side, side),
+                         peanut::ui::Gp(sk.accent), 1.9f);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  按钮角色体系
+//  形状/颜色不再由单个控件决定，而是由"语义角色"决定：
+//    primary   主操作，一屏最多一个 → 实心强调色 + 反白字
+//    secondary 常规操作             → 卡片面 + 细描边
+//    ghost     辅助/工具按钮        → 无底无框，悬停才出现柔光底
+//    danger    破坏性操作           → 危险色浅底，悬停加深
+//    toggle    开关                 → 胶囊 + 状态圆点
+// ═══════════════════════════════════════════════════════════
+enum BtnRole {
+    BTN_SECONDARY = 0,
+    BTN_PRIMARY   = 1,
+    BTN_DANGER    = 2,
+    BTN_GHOST     = 3,
+    BTN_TOGGLE    = 4
+};
+
+inline void SetBtnRole(HWND h, int role) {
+    if (h) SetPropW(h, L"ph_role",
+                    reinterpret_cast<HANDLE>(static_cast<INT_PTR>(role)));
+}
+inline int GetBtnRole(HWND h) {
+    if (!h) return BTN_SECONDARY;
+    return static_cast<int>(reinterpret_cast<INT_PTR>(GetPropW(h, L"ph_role")));
+}
+inline void SetBtnAccent(HWND h, COLORREF c) {
+    if (h) SetPropW(h, L"ph_accent",
+                    reinterpret_cast<HANDLE>(static_cast<INT_PTR>(c)));
+}
+inline COLORREF GetBtnAccent(HWND h, COLORREF def) {
+    HANDLE v = h ? GetPropW(h, L"ph_accent") : nullptr;
+    return v ? static_cast<COLORREF>(reinterpret_cast<INT_PTR>(v)) : def;
+}
+// toggle 角色的选中态（BS_PUSHBUTTON 无内建 check 状态，用属性承载）
+inline void SetBtnChecked(HWND h, bool on) {
+    if (!h) return;
+    if (on) SetPropW(h, L"ph_checked", reinterpret_cast<HANDLE>(1));
+    else    RemovePropW(h, L"ph_checked");
+}
+// 按钮左侧矢量图标（name 为字面量，生命周期同进程）
+inline void SetBtnIcon(HWND h, const wchar_t* name) {
+    if (h) SetPropW(h, L"ph_icon",
+                    reinterpret_cast<HANDLE>(const_cast<wchar_t*>(name)));
+}
+inline const wchar_t* GetBtnIcon(HWND h) {
+    return h ? reinterpret_cast<const wchar_t*>(GetPropW(h, L"ph_icon")) : nullptr;
+}
+
+// ── 文本控件的文字色 ─────────────────────────────────────
+// 默认全部 TEXT_PRIMARY 会让标题/数值/说明混成一片，
+// 因此允许逐个控件指定前景色，形成排版层级。
+inline void SetCtrlFg(HWND h, COLORREF c) {
+    if (h) SetPropW(h, L"ph_fg",
+                    reinterpret_cast<HANDLE>(static_cast<INT_PTR>(c)));
+}
+inline COLORREF GetCtrlFg(HWND h, COLORREF def) {
+    HANDLE v = h ? GetPropW(h, L"ph_fg") : nullptr;
+    return v ? static_cast<COLORREF>(reinterpret_cast<INT_PTR>(v)) : def;
+}
+
+// 自绘按钮。surface = 按钮所在容器的底色，用于填充圆角矩形之外的像素。
+void DrawOwnerButton(HDC hdc, HWND hwnd, const RECT& rcItem, UINT itemState,
+                     COLORREF surface, HFONT font) {
+    const auto& sk = peanut::ui::g_skin;
+    const bool pressed  = (itemState & ODS_SELECTED) != 0;
+    const bool disabled = (itemState & ODS_DISABLED) != 0;
+    const bool hovered  = GetPropW(hwnd, L"ph_hover") != nullptr;
+    const int  role     = GetBtnRole(hwnd);
+    const COLORREF accent = GetBtnAccent(hwnd, ACCENT);
+
+    HBRUSH surfBr = CreateSolidBrush(surface);
+    FillRect(hdc, &rcItem, surfBr);
+    DeleteObject(surfBr);
+
+    RECT rc = rcItem;
+    COLORREF topC = surface, botC = surface, borderClr = 0, fg = TEXT_PRIMARY;
+    bool drawBorder = false;
+    int textInsetLeft = 0;
+
+    switch (role) {
+    case BTN_PRIMARY: {
+        COLORREF base = disabled ? peanut::ui::MixColor(accent, surface, 0.78f) : accent;
+        if (disabled) {
+            topC = botC = base;
+            borderClr = peanut::ui::MixColor(accent, surface, 0.62f);
+            fg = peanut::ui::MixColor(peanut::ui::ContrastTextOn(accent), surface, 0.45f);
+        } else if (pressed) {
+            topC = peanut::ui::ShadeColor(base, -0.10f);
+            botC = peanut::ui::ShadeColor(base, -0.20f);
+            borderClr = peanut::ui::ShadeColor(base, -0.24f);
+            fg = peanut::ui::ContrastTextOn(base);
+        } else if (hovered) {
+            topC = peanut::ui::ShadeColor(base,  0.12f);
+            botC = peanut::ui::ShadeColor(base, -0.02f);
+            borderClr = peanut::ui::ShadeColor(base,  0.30f);
+            fg = peanut::ui::ContrastTextOn(base);
+        } else {
+            topC = peanut::ui::ShadeColor(base,  0.05f);
+            botC = peanut::ui::ShadeColor(base, -0.12f);
+            borderClr = peanut::ui::ShadeColor(base,  0.20f);
+            fg = peanut::ui::ContrastTextOn(base);
+        }
+        drawBorder = true;
+        break;
+    }
+    case BTN_DANGER: {
+        const COLORREF danger = ERROR_COLOR;
+        if (disabled) {
+            topC = botC = surface;
+            borderClr = peanut::ui::MixColor(danger, surface, 0.72f);
+            fg = TEXT_MUTED;
+        } else if (pressed || hovered) {
+            topC = borderClr = peanut::ui::ShadeColor(danger, pressed ? -0.14f : -0.04f);
+            botC = peanut::ui::ShadeColor(danger, -0.14f);
+            fg = peanut::ui::ContrastTextOn(danger);
+        } else {
+            topC = botC = peanut::ui::MixColor(danger, surface, 0.88f);
+            borderClr = peanut::ui::MixColor(danger, surface, 0.42f);
+            fg = danger;
+        }
+        drawBorder = true;
+        break;
+    }
+    case BTN_GHOST: {
+        if (disabled) {
+            fg = TEXT_MUTED;
+        } else if (pressed) {
+            topC = botC = peanut::ui::MixColor(accent, surface, 0.80f);
+            borderClr = peanut::ui::MixColor(accent, surface, 0.55f);
+            fg = accent;
+            drawBorder = true;
+        } else if (hovered) {
+            topC = botC = peanut::ui::MixColor(accent, surface, 0.86f);
+            borderClr = peanut::ui::MixColor(accent, surface, 0.62f);
+            fg = accent;
+            drawBorder = true;
+        } else {
+            fg = TEXT_SECONDARY;
+        }
+        break;
+    }
+    case BTN_TOGGLE: {
+        const bool on = GetPropW(hwnd, L"ph_checked") != nullptr;
+        if (on) {
+            topC = botC = peanut::ui::MixColor(accent, surface, hovered ? 0.78f : 0.84f);
+            borderClr = peanut::ui::MixColor(accent, surface, 0.48f);
+            fg = accent;
+        } else {
+            topC = botC = peanut::ui::ShadeColor(surface, sk.light ? -0.05f : 0.10f);
+            borderClr = peanut::ui::MixColor(BORDER, surface, 0.15f);
+            fg = hovered ? TEXT_PRIMARY : TEXT_SECONDARY;
+        }
+        drawBorder = true;
+        textInsetLeft = 22;
+        break;
+    }
+    default: { // BTN_SECONDARY
+        if (disabled) {
+            topC = botC = BG_INPUT;
+            borderClr = BORDER;
+            fg = TEXT_MUTED;
+        } else if (pressed) {
+            topC = peanut::ui::ShadeColor(BG_CARD, sk.light ? -0.10f : 0.04f);
+            botC = peanut::ui::ShadeColor(BG_CARD2, sk.light ? -0.12f : 0.02f);
+            borderClr = ACCENT;
+            fg = ACCENT;
+        } else if (hovered) {
+            topC = peanut::ui::ShadeColor(BG_CARD, sk.light ? -0.04f : 0.12f);
+            botC = peanut::ui::ShadeColor(BG_CARD2, sk.light ? -0.06f : 0.10f);
+            borderClr = ACCENT;
+            fg = ACCENT;
+        } else {
+            if (sk.light) {
+                topC = peanut::ui::ShadeColor(BG_CARD, -0.05f);
+                botC = peanut::ui::ShadeColor(BG_CARD2, -0.07f);
+                borderClr = sk.border;
+            } else {
+                topC = BG_CARD;
+                botC = BG_CARD2;
+                borderClr = peanut::ui::ShadeColor(BG_CARD2, 0.18f);
+            }
+            fg = TEXT_PRIMARY;
+        }
+        drawBorder = true;
+        break;
+    }
+    }
+
+    // 实心按钮略窄一点，避免与容器边缘贴合显得拥挤
+    if (role == BTN_PRIMARY || role == BTN_DANGER) {
+        InflateRect(&rc, -1, -1);
+    }
+
+    if (rc.right - rc.left > 2 && rc.bottom - rc.top > 2) {
+        FillRoundRect(hdc, rc, sk.btnRadius, topC, botC, drawBorder, borderClr, 1.0f);
+    }
+
+    // toggle 状态圆点：开=实心，关=空心环
+    if (role == BTN_TOGGLE && !disabled) {
+        const bool on = GetPropW(hwnd, L"ph_checked") != nullptr;
+        const int cy = (rc.top + rc.bottom) / 2;
+        const int cx = rc.left + 13;
+        HBRUSH fill = on ? CreateSolidBrush(fg)
+                         : static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        HPEN   pen  = CreatePen(PS_SOLID, on ? 1 : 2, fg);
+        HGDIOBJ ob = SelectObject(hdc, fill);
+        HGDIOBJ op = SelectObject(hdc, pen);
+        Ellipse(hdc, cx - 4, cy - 4, cx + 4, cy + 4);
+        SelectObject(hdc, ob);
+        SelectObject(hdc, op);
+        DeleteObject(pen);
+        if (on) DeleteObject(fill);
+    }
+
+    wchar_t buf[128] = {};
+    GetWindowTextW(hwnd, buf, 128);
+    const wchar_t* icon = GetBtnIcon(hwnd);
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, fg);
+    HFONT oldFont = nullptr;
+    if (font) oldFont = static_cast<HFONT>(SelectObject(hdc, font));
+
+    RECT tr = rc;
+    tr.left += textInsetLeft;
+
+    // 带图标的按钮：图标 + 文字作为一组整体居中
+    if (icon && icon[0]) {
+        SIZE ts = { 0, 0 };
+        GetTextExtentPoint32W(hdc, buf, static_cast<int>(wcslen(buf)), &ts);
+        const int isz = 16, gap = 8;
+        int x0 = rc.left + (rc.right - rc.left - (isz + gap + ts.cx)) / 2;
+        if (x0 < rc.left + 8) x0 = rc.left + 8;
+        const int cy = (rc.top + rc.bottom) / 2 - isz / 2;
+        Graphics g(hdc);
+        peanut::ui::DrawIcon(g, icon, RectF((REAL)x0, (REAL)cy,
+                                            (REAL)isz, (REAL)isz),
+                             peanut::ui::Gp(fg), 1.9f);
+        tr.left = x0 + isz + gap;
+        tr.right = rc.right - 6;
+        DrawTextW(hdc, buf, -1, &tr,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    } else {
+        const UINT flags = (textInsetLeft > 0 ? DT_LEFT : DT_CENTER)
+                         | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS;
+        DrawTextW(hdc, buf, -1, &tr, flags);
+    }
+    if (oldFont) SelectObject(hdc, oldFont);
+}
+
+} // namespace
+
+// ═══════════════════════════════════════════════════════════
 //  构造 / 析构
 // ═══════════════════════════════════════════════════════════
 MainWindow::MainWindow(HINSTANCE hInst) : hInst_(hInst) {
@@ -143,6 +570,10 @@ MainWindow::~MainWindow() {
     if (hFontButton_)       DeleteObject(hFontButton_);
     if (hFontHeader_)       DeleteObject(hFontHeader_);
     if (hFontSectionTitle_) DeleteObject(hFontSectionTitle_);
+    if (hFontNav_)          DeleteObject(hFontNav_);
+    if (hFontBrand_)        DeleteObject(hFontBrand_);
+    if (hFontBadge_)        DeleteObject(hFontBadge_);
+    if (hFontStatSub_)      DeleteObject(hFontStatSub_);
 
     if (hBrushBg_)      DeleteObject(hBrushBg_);
     if (hBrushSidebar_) DeleteObject(hBrushSidebar_);
@@ -162,17 +593,29 @@ void MainWindow::CreateFonts() {
                            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, face);
     };
 
-    hFontDefault_      = makeFont(19, FW_NORMAL, L"Microsoft YaHei");
-    hFontLog_          = makeFont(18, FW_NORMAL, L"Consolas");
-    hFontCardKey_      = makeFont(18, FW_NORMAL, L"Consolas");
-    hFontSidebar_      = makeFont(18, FW_NORMAL, L"Microsoft YaHei");
-    hFontHeader_       = makeFont(18, FW_SEMIBOLD, L"Microsoft YaHei");
-    hFontTitle_        = makeFont(25, FW_BOLD, L"Microsoft YaHei");
-    hFontStatValue_    = makeFont(23, FW_BOLD, L"Microsoft YaHei");
-    hFontStatTitle_    = makeFont(16, FW_NORMAL, L"Microsoft YaHei");
-    hFontLabel_        = makeFont(18, FW_NORMAL, L"Microsoft YaHei");
-    hFontButton_       = makeFont(19, FW_NORMAL, L"Microsoft YaHei");
-    hFontSectionTitle_ = makeFont(19, FW_SEMIBOLD, L"Microsoft YaHei");
+    const wchar_t* fam  = peanut::ui::g_skin.family;
+    const wchar_t* mono = peanut::ui::g_skin.mono;
+
+    // 字号层级：title(24) > brand(20) > section(20)
+    //          > body/nav/button/table/label(18)
+    //          > cardKey/sidebar/header(17) > statValue(30) > badge(15)
+    //          > statTitle(14) > statSub(12)
+    hFontDefault_      = makeFont(18, FW_NORMAL,   fam);
+    hFontLog_          = makeFont(16, FW_NORMAL,   mono);
+    hFontCardKey_      = makeFont(17, FW_NORMAL,   mono);
+    hFontSidebar_      = makeFont(17, FW_NORMAL,   fam);
+    hFontNav_          = makeFont(18, FW_SEMIBOLD, fam);
+    hFontBrand_        = makeFont(20, FW_BOLD,     fam);
+    hFontBadge_        = makeFont(15, FW_SEMIBOLD, fam);
+    hFontHeader_       = makeFont(17, FW_SEMIBOLD, fam);
+    hFontTitle_        = makeFont(24, FW_BOLD,     fam);
+    // KPI 卡片改紧凑布局（卡高 118，原 176），字号随之下调一档
+    hFontStatValue_    = makeFont(30, FW_BOLD,     fam);
+    hFontStatTitle_    = makeFont(14, FW_NORMAL,   fam);
+    hFontStatSub_      = makeFont(12, FW_NORMAL,   fam);
+    hFontLabel_        = makeFont(18, FW_NORMAL,   fam);
+    hFontButton_       = makeFont(18, FW_NORMAL,   fam);
+    hFontSectionTitle_ = makeFont(20, FW_SEMIBOLD, fam);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -201,8 +644,8 @@ bool MainWindow::Create(int nCmdShow) {
 
     int wx = config_.window_x;
     int wy = config_.window_y;
-    constexpr int fixedClientW = 1280;
-    constexpr int fixedClientH = 840;
+    constexpr int fixedClientW = 896;
+    constexpr int fixedClientH = 672;
     constexpr DWORD fixedWindowStyle = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     RECT fixedRect{0, 0, fixedClientW, fixedClientH};
     AdjustWindowRectEx(&fixedRect, fixedWindowStyle, FALSE, 0);
@@ -211,8 +654,11 @@ bool MainWindow::Create(int nCmdShow) {
     if (wx == CW_USEDEFAULT) wy = CW_USEDEFAULT;
 
     // 传入 this：WM_NCCREATE/WM_CREATE 发生在 CreateWindow 返回前，必须此时绑定 hwnd
+    std::wstring title = L"Peanut Soft Protect 2026-7-26  ·  ";
+    title += peanut::ui::g_skin.name;
+
     hwndMain_ = CreateWindowExW(
-        0, WND_CLASS, L"Peanut Soft Protect 2026-7-26",
+        0, WND_CLASS, title.c_str(),
         fixedWindowStyle,
         wx, wy, ww, wh,
         nullptr, nullptr, hInst_, this
@@ -220,8 +666,8 @@ bool MainWindow::Create(int nCmdShow) {
 
     if (!hwndMain_) return false;
 
-    // Win10/11 沉浸式暗色（标题栏/部分滚动条）
-    BOOL dark = TRUE;
+    // Win10/11 沉浸式暗色（标题栏/部分滚动条）：亮色皮肤关闭
+    BOOL dark = peanut::ui::g_skin.light ? FALSE : TRUE;
     DwmSetWindowAttribute(hwndMain_, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
 
     // 兜底：若 WM_CREATE 未走到 OnCreate（历史 bug），在此补建 UI
@@ -266,12 +712,109 @@ LRESULT CALLBACK MainWindow::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
 // ═══════════════════════════════════════════════════════════
 //  暗色父窗口子类化（子控件的 CTLCOLOR 发给父窗口，非主窗）
 // ═══════════════════════════════════════════════════════════
+// 自绘按钮 hover 追踪：进出时刷新，让按钮有悬停反馈
+LRESULT CALLBACK MainWindow::BtnHoverProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                          UINT_PTR idSubclass, DWORD_PTR refData) {
+    switch (msg) {
+    case WM_MOUSEMOVE:
+        if (!GetPropW(hwnd, L"ph_hover")) {
+            SetPropW(hwnd, L"ph_hover", reinterpret_cast<HANDLE>(1));
+            TRACKMOUSEEVENT tme = {};
+            tme.cbSize = sizeof(tme);
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = hwnd;
+            TrackMouseEvent(&tme);
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
+        break;
+    case WM_MOUSELEAVE:
+        RemovePropW(hwnd, L"ph_hover");
+        InvalidateRect(hwnd, nullptr, FALSE);
+        break;
+    case WM_NCDESTROY:
+        RemovePropW(hwnd, L"ph_hover");
+        break;
+    default:
+        break;
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+// 亮色皮肤下统一 Edit 边框为主题色，去掉系统的硬黑边（只动非客户区，不影响文本）
+LRESULT CALLBACK MainWindow::EditBorderProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                            UINT_PTR idSubclass, DWORD_PTR refData) {
+    if (msg == WM_NCPAINT && peanut::ui::g_skin.light) {
+        RECT wr, cr;
+        GetWindowRect(hwnd, &wr);
+        GetClientRect(hwnd, &cr);
+        const int w  = wr.right - wr.left;
+        const int h  = wr.bottom - wr.top;
+        const int bw = (w - (cr.right - cr.left)) / 2;
+        if (bw > 0 && h > bw * 2) {
+            HDC dc = GetWindowDC(hwnd);
+            if (dc) {
+                HBRUSH b = CreateSolidBrush(BORDER);
+                RECT r = { 0, 0, w, bw };
+                FillRect(dc, &r, b);
+                r.top = h - bw; r.bottom = h;
+                FillRect(dc, &r, b);
+                r = { 0, bw, bw, h - bw };
+                FillRect(dc, &r, b);
+                r = { w - bw, bw, w, h - bw };
+                FillRect(dc, &r, b);
+                DeleteObject(b);
+                ReleaseDC(hwnd, dc);
+            }
+        }
+        return 0;
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
+// 卡密列表行悬停：只跟踪鼠标、刷新高亮行，不接管任何绘制
+LRESULT CALLBACK MainWindow::ListHoverProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
+                                           UINT_PTR, DWORD_PTR) {
+    auto* self = g_pMainWindow;
+    if (self) {
+        if (msg == WM_MOUSEMOVE) {
+            LVHITTESTINFO ht = {};
+            ht.pt.x = GET_X_LPARAM(lp);
+            ht.pt.y = GET_Y_LPARAM(lp);
+            ListView_SubItemHitTest(hwnd, &ht);
+            const int hot = ht.iItem;
+            if (hot != self->cardListHot_) {
+                self->cardListHot_ = hot;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+            TrackMouseEvent(&tme);
+        } else if (msg == WM_MOUSELEAVE) {
+            if (self->cardListHot_ != -1) {
+                self->cardListHot_ = -1;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+        }
+    }
+    return DefSubclassProc(hwnd, msg, wp, lp);
+}
+
 LRESULT CALLBACK MainWindow::DarkParentProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
                                              UINT_PTR, DWORD_PTR) {
     auto* self = g_pMainWindow;
     if (!self) return DefSubclassProc(hwnd, msg, wp, lp);
 
     switch (msg) {
+        case WM_MOUSEWHEEL:
+            // 设置页：滚轮（含落在分组卡片上的滚轮）滚动整页
+            if (self->hwndPanelSettings_ &&
+                (hwnd == self->hwndPanelSettings_ ||
+                 IsChild(self->hwndPanelSettings_, hwnd))) {
+                const int notches = GET_WHEEL_DELTA_WPARAM(wp) / WHEEL_DELTA;
+                self->ScrollSettings(-notches * 56);
+                return 0;
+            }
+            break;
+
         case WM_COMMAND:
             // 子面板上的按钮/单选的 BN_CLICKED 发给父面板，需转到主窗处理
             if (self->hwndMain_) {
@@ -309,10 +852,72 @@ LRESULT CALLBACK MainWindow::DarkParentProc(HWND hwnd, UINT msg, WPARAM wp, LPAR
             HDC hdc = BeginPaint(hwnd, &ps);
             RECT rc;
             GetClientRect(hwnd, &rc);
-            HBRUSH brush = self->hBrushBg_;
-            if (hwnd == self->hwndPanelLogs_) brush = self->hBrushLog_;
-            else if (hwnd == self->hwndTopNav_) brush = self->hBrushSidebar_;
-            FillRect(hdc, &rc, brush);
+            if (hwnd == self->hwndTopNav_) {
+                const auto& sk = peanut::ui::g_skin;
+                FillVGradient(hdc, rc, BG_TOPNAV, BG_TOPNAV2);
+
+                // ── 品牌标识区：渐变 logo 方块 + 产品名 + 皮肤副标 ──
+                {
+                    const int chipS = 28;
+                    const int chipX = 14;
+                    const int chipY = (rc.bottom - chipS) / 2;
+                    {
+                        Graphics g(hdc);
+                        g.SetSmoothingMode(SmoothingModeAntiAlias);
+                        RectF chip((REAL)chipX, (REAL)chipY, (REAL)chipS, (REAL)chipS);
+                        LinearGradientBrush lb(chip, peanut::ui::Gp(sk.accent),
+                                               peanut::ui::Gp(sk.accent2),
+                                               LinearGradientModeForwardDiagonal);
+                        GraphicsPath cp;
+                        GpRoundPath(cp, chip, 10.0f);
+                        g.FillPath(&lb, &cp);
+                        peanut::ui::DrawIcon(g, L"logo",
+                            RectF(chip.X + 7.0f, chip.Y + 7.0f, 14.0f, 14.0f),
+                            Color(255, 255, 255), 1.6f);
+                    }
+
+                    SetBkMode(hdc, TRANSPARENT);
+                    SetTextColor(hdc, TEXT_PRIMARY);
+                    HFONT oldB = static_cast<HFONT>(SelectObject(hdc, self->hFontBrand_));
+                    RECT tr = { chipX + chipS + 8, chipY - 4, kNavBrandW - 10, chipY + 16 };
+                    DrawTextW(hdc, L"Peanut", -1, &tr,
+                              DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                    if (oldB) SelectObject(hdc, oldB);
+
+                    SetTextColor(hdc, sk.textMuted);
+                    HFONT oldS = static_cast<HFONT>(SelectObject(hdc, self->hFontBadge_));
+                    RECT sr = { chipX + chipS + 9, chipY + 15, kNavBrandW - 10, chipY + 30 };
+                    DrawTextW(hdc, sk.name, -1, &sr,
+                              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+                    if (oldS) SelectObject(hdc, oldS);
+
+                    // 品牌区与导航区之间的竖分隔
+                    RECT vs = { kNavBrandW - 12, rc.top + 14, kNavBrandW - 11, rc.bottom - 14 };
+                    FillRect(hdc, &vs, self->hBrushInput_);
+                }
+
+                if (peanut::ui::g_skin.navDivider && rc.bottom >= 2) {
+                    RECT ln = { rc.left, rc.bottom - 1, rc.right, rc.bottom };
+                    FillHGradientLine(hdc, ln, ACCENT, ACCENT2);
+                }
+            } else if (hwnd == self->hwndPanelLogs_) {
+                FillRect(hdc, &rc, self->hBrushLog_);
+                // 头部：左侧强调圆点 + 下方细分割线，把"标题条"从日志流里分出来
+                const int hdrH = 34;
+                const int cy = hdrH / 2;
+                HBRUSH dot = CreateSolidBrush(ACCENT);
+                HGDIOBJ ob = SelectObject(hdc, dot);
+                HGDIOBJ op = SelectObject(hdc, GetStockObject(NULL_PEN));
+                Ellipse(hdc, 14, cy - 4, 22, cy + 4);
+                SelectObject(hdc, ob);
+                SelectObject(hdc, op);
+                DeleteObject(dot);
+
+                RECT ln = { 0, hdrH, rc.right, hdrH + 1 };
+                FillRect(hdc, &ln, self->hBrushInput_);
+            } else {
+                FillRect(hdc, &rc, self->hBrushBg_);
+            }
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -325,18 +930,29 @@ LRESULT CALLBACK MainWindow::DarkParentProc(HWND hwnd, UINT msg, WPARAM wp, LPAR
             HWND child = reinterpret_cast<HWND>(lp);
             const bool isLog = (hwnd == self->hwndPanelLogs_);
             const bool isTop = (hwnd == self->hwndTopNav_);
-            const bool isFwCard = (hwnd == self->hwndFwRuleCard_);
-            COLORREF bg = isLog ? BG_LOG : (isTop ? BG_TOPNAV : (isFwCard ? BG_CARD : BG_DEEP));
+            // 卡片容器（统计卡 / 快捷面板 / 运行概览卡 / 风控卡）内的文字控件需与卡片底色一致
+            bool isCardSurface = (hwnd == self->hwndFwRuleCard_ ||
+                                  hwnd == self->hwndDashQuickPanel_ ||
+                                  hwnd == self->hwndDashOverviewPanel_);
+            if (!isCardSurface) {
+                for (auto& sc : self->statCards_) {
+                    if (sc.hwndPanel == hwnd) { isCardSurface = true; break; }
+                }
+            }
+            COLORREF bg = isLog ? BG_LOG
+                        : (isTop ? BG_TOPNAV
+                        : (isCardSurface ? BG_CARD : BG_DEEP));
             HBRUSH brush = isLog ? self->hBrushLog_
-                          : (isTop ? self->hBrushSidebar_ : (isFwCard ? self->hBrushCard_ : self->hBrushBg_));
+                          : (isTop ? self->hBrushSidebar_
+                          : (isCardSurface ? self->hBrushCard_ : self->hBrushBg_));
 
             if (msg == WM_CTLCOLOREDIT) {
-                bg = isLog ? BG_LOG : (isFwCard ? BG_CARD : BG_INPUT);
-                brush = isLog ? self->hBrushLog_ : (isFwCard ? self->hBrushCard_ : self->hBrushInput_);
+                bg = isLog ? BG_LOG : (isCardSurface ? BG_CARD : BG_INPUT);
+                brush = isLog ? self->hBrushLog_ : (isCardSurface ? self->hBrushCard_ : self->hBrushInput_);
             }
             SetBkMode(hdc, OPAQUE);
             SetBkColor(hdc, bg);
-            SetTextColor(hdc, TEXT_PRIMARY);
+            SetTextColor(hdc, GetCtrlFg(child, TEXT_PRIMARY));
             return reinterpret_cast<LRESULT>(brush);
         }
         case WM_ERASEBKGND:
@@ -361,14 +977,14 @@ LRESULT CALLBACK MainWindow::DarkHeaderProc(HWND hwnd, UINT msg, WPARAM wp, LPAR
             HDC hdc = BeginPaint(hwnd, &ps);
             RECT rc;
             GetClientRect(hwnd, &rc);
-            HBRUSH hdr = CreateSolidBrush(BG_HEADER);
-            FillRect(hdc, &rc, hdr);
-            DeleteObject(hdr);
+            FillVGradient(hdc, rc, BG_HEADER, peanut::ui::MixColor(BG_HEADER, BG_DEEP, 0.30f));
+            if (rc.bottom >= 2) {
+                RECT ln = { rc.left, rc.bottom - 1, rc.right, rc.bottom };
+                FillHGradientLine(hdc, ln, ACCENT, DIVIDER);
+            }
 
-            HPEN pen = CreatePen(PS_SOLID, 1, BORDER);
+            HPEN pen = CreatePen(PS_SOLID, 1, DIVIDER);
             HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, pen));
-            MoveToEx(hdc, rc.left, rc.bottom - 1, nullptr);
-            LineTo(hdc, rc.right, rc.bottom - 1);
 
             SetBkMode(hdc, TRANSPARENT);
             SetTextColor(hdc, TEXT_SECONDARY);
@@ -421,41 +1037,91 @@ LRESULT CALLBACK MainWindow::NavBtnProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             for (auto& b : self->navButtons_) {
                 if (b.hwnd == hwnd) { btn = &b; break; }
             }
+            const auto& sk = peanut::ui::g_skin;
+            const bool active = btn && btn->isActive;
+            const bool hover  = btn && btn->isHovered;
 
-            HDC memDC = CreateCompatibleDC(hdc);
-            HBITMAP memBmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
-            HBITMAP oldBmp = static_cast<HBITMAP>(SelectObject(memDC, memBmp));
+            // 背景取顶栏渐变的对应行，保证圆角处无缝
+            RECT wr = rc;
+            MapWindowPoints(hwnd, GetParent(hwnd), reinterpret_cast<LPPOINT>(&wr), 2);
+            const float totalH = (float)(NavH() > 0 ? NavH() : 1);
+            COLORREF topC = peanut::ui::MixColor(BG_TOPNAV, BG_TOPNAV2, (float)wr.top / totalH);
+            COLORREF botC = peanut::ui::MixColor(BG_TOPNAV, BG_TOPNAV2, (float)wr.bottom / totalH);
+            FillVGradient(hdc, rc, topC, botC);
 
-            COLORREF bgColor = BG_TOPNAV;
-            if (btn && btn->isActive)
-                bgColor = BG_HOVER;
-            else if (btn && btn->isHovered)
-                bgColor = BG_HOVER;
+            COLORREF textColor = active ? sk.textPrimary : sk.textSecondary;
 
-            HBRUSH bgBrush = CreateSolidBrush(bgColor);
-            FillRect(memDC, &rc, bgBrush);
-            DeleteObject(bgBrush);
+            if (sk.navStyle == peanut::ui::NAV_PILL) {
+                // 胶囊风格：选中 = 强调色实心胶囊
+                if (active || hover) {
+                    RECT r = rc;
+                    InflateRect(&r, -1, -1);
+                    const float rad = (float)(r.bottom - r.top) / 2.0f;
+                    const COLORREF fill = active ? sk.accent : sk.bgHover;
+                    FillRoundRect(hdc, r, rad, fill,
+                                  active ? peanut::ui::ShadeColor(sk.accent, 0.12f) : fill,
+                                  false, fill, 1.0f);
+                    if (active) textColor = peanut::ui::ContrastTextOn(sk.accent);
+                }
+            } else if (sk.navStyle == peanut::ui::NAV_LEFTMARK) {
+                // 左侧竖条风格
+                if (active || hover) {
+                    RECT r = rc;
+                    InflateRect(&r, -1, -1);
+                    const COLORREF fill = active ? sk.accentSoft : sk.bgHover;
+                    FillRoundRect(hdc, r, sk.navItemRadius, fill, fill, false, 0, 0);
+                }
+                if (active) {
+                    const int markH = rc.bottom - rc.top - 14;
+                    RectF br((REAL)(rc.left + 2), (REAL)(rc.top + 7),
+                             (REAL)3.0f, (REAL)markH);
+                    Graphics g(hdc);
+                    g.SetSmoothingMode(SmoothingModeAntiAlias);
+                    SolidBrush b(peanut::ui::Gp(sk.accent));
+                    g.FillRectangle(&b, br);
+                    textColor = sk.accent;
+                }
+            } else { // NAV_UNDERLINE — 柔和底 + 底部短渐变条
+                if (active || hover) {
+                    RECT r = rc;
+                    InflateRect(&r, -1, -1);
+                    const COLORREF fill = active
+                        ? sk.accentSoft
+                        : peanut::ui::MixColor(sk.bgHover, topC, 0.55f);
+                    FillRoundRect(hdc, r, sk.navItemRadius, fill, fill, false, 0, 0);
+                }
+                if (active) {
+                    RECT bar = { rc.left + 24, rc.bottom - 2, rc.right - 24, rc.bottom };
+                    FillHGradientLine(hdc, bar, sk.accent, sk.accent2);
+                    textColor = sk.accent;
+                }
+            }
 
-            SetBkMode(memDC, TRANSPARENT);
-            SetTextColor(memDC, btn && btn->isActive ? TEXT_PRIMARY : TEXT_SECONDARY);
-            SelectObject(memDC, self->hFontSidebar_);
+            // 图标（若该导航项定义了）
+            int textLeft = rc.left + 14;
+            if (btn && btn->icon && btn->icon[0]) {
+                const int side = 16;
+                Graphics g(hdc);
+                g.SetSmoothingMode(SmoothingModeAntiAlias);
+                RectF ib((REAL)(rc.left + 13),
+                         (REAL)((rc.top + rc.bottom - side) / 2),
+                         (REAL)side, (REAL)side);
+                peanut::ui::DrawIcon(g, btn->icon, ib, peanut::ui::Gp(textColor), 1.9f);
+                textLeft = rc.left + 13 + side + 7;
+            }
 
+            SetBkMode(hdc, TRANSPARENT);
+            SetTextColor(hdc, textColor);
+            HFONT oldF = static_cast<HFONT>(SelectObject(hdc, self->hFontNav_));
             if (btn) {
-                DrawTextW(memDC, btn->label, -1, &rc,
-                          DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                RECT tr = rc;
+                tr.left  = textLeft;
+                tr.right -= 6;
+                DrawTextW(hdc, btn->label, -1, &tr,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             }
+            if (oldF) SelectObject(hdc, oldF);
 
-            if (btn && btn->isActive) {
-                RECT bar = { 12, rc.bottom - 3, rc.right - 12, rc.bottom };
-                HBRUSH barBrush = CreateSolidBrush(ACCENT);
-                FillRect(memDC, &bar, barBrush);
-                DeleteObject(barBrush);
-            }
-
-            BitBlt(hdc, 0, 0, rc.right, rc.bottom, memDC, 0, 0, SRCCOPY);
-            SelectObject(memDC, oldBmp);
-            DeleteObject(memBmp);
-            DeleteDC(memDC);
             EndPaint(hwnd, &ps);
             return 0;
         }
@@ -631,6 +1297,20 @@ LRESULT MainWindow::HandleMessage(UINT msg, WPARAM wp, LPARAM lp) {
 void MainWindow::OnCreate() {
     if (hwndTopNav_) return; // 已创建，避免重复
 
+    // 建 UI 之前先用真实客户区刷新布局参数：
+    // 各页面（尤其设置页）在创建时就按最终尺寸落位，
+    // 否则会沿用成员默认值，右侧留出一条空白。
+    if (hwndMain_) {
+        RECT crc = {};
+        if (GetClientRect(hwndMain_, &crc) && crc.right > 0) {
+            clientW_ = crc.right;
+            clientH_ = crc.bottom;
+            contentW_ = clientW_;
+            contentH_ = clientH_ - NavH() - 5 - globalLogH_ - statusBarH_;
+            if (contentH_ < 120) contentH_ = 120;
+        }
+    }
+
     // Layer 1: 启动反调试 watchdog (SDK, Release-only)
     peanut::security::antidebug::StartWatchdog([]() {
         // 威胁回调: 清密钥 + 安全擦除 (由 security_runtime 处理)
@@ -647,7 +1327,7 @@ void MainWindow::OnCreate() {
     // 内容区背景面板（顶栏之下、全局日志之上）
     hwndContentArea_ = CreateControl(L"STATIC", L"",
         WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | SS_OWNERDRAW,
-        0, TOP_NAV_H, 0, 0,
+        0, NavH(), 0, 0,
         hwndMain_, nullptr, nullptr);
 
     // 各标签页面板（无独立 Logs 页）
@@ -707,32 +1387,37 @@ void MainWindow::CreateTopNav() {
     struct NavDef {
         NavTab tab;
         const wchar_t* label;
+        const wchar_t* icon;
     };
 
     const NavDef navs[] = {
-        { NavTab::Dashboard,    L"仪表盘" },
-        { NavTab::CardMgmt,     L"卡密管理" },
-        { NavTab::PluginCenter, L"插件中心" },
-        { NavTab::Firewall,     L"防火墙" },
-        { NavTab::Settings,     L"设置" },
+        { NavTab::Dashboard,    L"仪表盘",   L"dashboard" },
+        { NavTab::CardMgmt,     L"卡密管理", L"key"       },
+        { NavTab::PluginCenter, L"插件中心", L"plugin"    },
+        { NavTab::Firewall,     L"防火墙",   L"shield"    },
+        { NavTab::Settings,     L"设置",     L"gear"      },
     };
 
     navButtons_.clear();
-    const int btnW = 110;
-    const int btnH = TOP_NAV_H;
-    int x = 12;
+    const int btnW = 112;
+    const int navH = NavH();
+    int btnH = peanut::ui::g_skin.navBtnHeight;
+    if (btnH < 28) btnH = 28;
+    if (btnH > navH - 10) btnH = navH - 10;
+    const int btnY = (navH - btnH) / 2;
+    int x = kNavBrandW;   // 让开左侧品牌标识区
 
     for (auto& nd : navs) {
         UINT_PTR subId = IDC_NAV_DASHBOARD + static_cast<UINT_PTR>(static_cast<int>(nd.tab));
         HWND hBtn = CreateControl(L"STATIC", L"",
             WS_CHILD | WS_VISIBLE | SS_NOTIFY,
-            x, 0, btnW, btnH,
+            x, btnY, btnW, btnH,
             hwndTopNav_, reinterpret_cast<HMENU>(subId),
-            hFontSidebar_);
+            hFontNav_);
 
         SetWindowSubclass(hBtn, NavBtnProc, subId, 0);
-        navButtons_.push_back({ hBtn, nd.tab, nd.label, L"", false, false });
-        x += btnW + 4;
+        navButtons_.push_back({ hBtn, nd.tab, nd.label, nd.icon, false, false });
+        x += btnW + 2;
     }
 
     InvalidateRect(hwndTopNav_, nullptr, TRUE);
@@ -748,37 +1433,76 @@ void MainWindow::CreateDashboardPanel() {
         hwndContentArea_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PANEL_DASHBOARD)),
         nullptr);
 
-    hwndDashTitle_ = CreateControl(L"STATIC", L"仪表盘",
-        WS_CHILD | WS_VISIBLE | SS_LEFT,
-        0, 0, 0, 0,
-        hwndPanelDashboard_, nullptr, hFontTitle_);
-    hwndDashSummary_ = CreateControl(L"STATIC", L"授权服务运行概览",
-        WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0,
-        hwndPanelDashboard_, nullptr, hFontLabel_);
+    // 页面名称已由顶部导航高亮，页内不再重复绘制标题与说明，
+    // 让出的高度全部给底部日志区。
     hwndDashQuickPanel_ = CreateControl(L"STATIC", L"",
         WS_CHILD | WS_VISIBLE | SS_OWNERDRAW, 0, 0, 0, 0,
         hwndPanelDashboard_, nullptr, nullptr);
-    CreateControl(L"STATIC", L"快捷操作", WS_CHILD | WS_VISIBLE | SS_LEFT,
-        18, 14, 120, 24, hwndDashQuickPanel_, nullptr, hFontSectionTitle_);
+    // 快捷操作卡片内的控件（父窗口坐标系，含 kCardPad 落影留白）
+    hwndDashQuickTitle_ = CreateControl(L"STATIC", L"快捷操作", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        kCardPad + 22, kCardPad + 16, 200, 26, hwndDashQuickPanel_, nullptr, hFontSectionTitle_);
+    hwndDashQuickHint_ = CreateControl(L"STATIC", L"常用命令与状态刷新", WS_CHILD | WS_VISIBLE | SS_LEFT,
+        kCardPad + 23, kCardPad + 42, 260, 20, hwndDashQuickPanel_, nullptr, hFontBadge_);
+    SetCtrlFg(hwndDashQuickHint_, TEXT_MUTED);
+
     hwndDashGenerateBtn_ = CreateControl(L"BUTTON", L"生成卡密",
-        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 18, 48, 120, 32, hwndDashQuickPanel_,
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        0, 0, 132, 36, hwndDashQuickPanel_,
         (HMENU)(INT_PTR)IDC_DASH_GENERATE_BTN, hFontButton_);
     hwndDashRefreshBtn_ = CreateControl(L"BUTTON", L"刷新数据",
-        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 150, 48, 120, 32, hwndDashQuickPanel_,
+        WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+        0, 0, 132, 36, hwndDashQuickPanel_,
         (HMENU)(INT_PTR)IDC_DASH_REFRESH_BTN, hFontButton_);
+
+    // ── 运行概览卡：2 列 × 3 行键值对 ──────────────────────
+    // KPI 卡改紧凑后腾出的纵向空间由本卡填充，避免页面出现大片空余。
+    hwndDashOverviewPanel_ = CreateControl(L"STATIC", L"",
+        WS_CHILD | WS_VISIBLE | SS_OWNERDRAW, 0, 0, 0, 0,
+        hwndPanelDashboard_, nullptr, nullptr);
+    hwndDashOverviewTitle_ = CreateControl(L"STATIC", L"运行概览",
+        WS_CHILD | WS_VISIBLE | SS_LEFT,
+        kCardPad + 20, kCardPad + 12, 200, 28, hwndDashOverviewPanel_,
+        nullptr, hFontSectionTitle_);
+    hwndDashOverviewHint_ = CreateControl(L"STATIC", L"当前运行参数，随配置与状态自动刷新",
+        WS_CHILD | WS_VISIBLE | SS_RIGHT,
+        0, kCardPad + 16, 260, 22, hwndDashOverviewPanel_, nullptr, hFontBadge_);
+    SetCtrlFg(hwndDashOverviewHint_, TEXT_MUTED);
+
+    {
+        // 行优先排列：第 1 行 3 项，第 2 行 3 项
+        const wchar_t* ovKeys[kOvCols * kOvRows] = {
+            L"监听地址", L"协议模式", L"传输加密",
+            L"帧上限",   L"心跳周期", L"授权方式",
+        };
+        const wchar_t* ovVals[kOvCols * kOvRows] = {
+            L"127.0.0.1:9001", L"TCP", L"WY-Cipher + HMAC",
+            L"64 MiB", L"30 秒", L"设备绑定 + 会话令牌",
+        };
+        for (int i = 0; i < kOvCols * kOvRows; ++i) {
+            hwndOvKey_[i] = CreateControl(L"STATIC", ovKeys[i],
+                WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
+                0, 0, 0, 0, hwndDashOverviewPanel_, nullptr, hFontStatSub_);
+            hwndOvVal_[i] = CreateControl(L"STATIC", ovVals[i],
+                WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS | SS_NOPREFIX,
+                0, 0, 0, 0, hwndDashOverviewPanel_, nullptr, hFontBadge_);
+            SetCtrlFg(hwndOvKey_[i], TEXT_MUTED);
+            SetCtrlFg(hwndOvVal_[i], TEXT_SECONDARY);
+        }
+    }
 
     struct DashDef {
         const wchar_t* title;
         const wchar_t* value;
         const wchar_t* subtext;
         COLORREF accent;
-        int kind;
+        const wchar_t* icon;
     };
+    // 配色收敛：数量类统一用主强调色，状态卡用状态色，协议用第二强调色
     const DashDef sc[] = {
-        { L"总卡密数",   L"0",   L"当前库存", SUCCESS, 0 },
-        { L"已激活",     L"0",   L"+到期数",  INFO,    1 },
-        { L"服务状态",   L"● 运行中", L"",    SUCCESS, 2 },
-        { L"通信协议",   L"TCP", L"加密传输", ACCENT,  3 },
+        { L"总卡密数", L"0",      L"当前库存", ACCENT,  L"cards"  },
+        { L"已激活",   L"0",      L"含已过期", ACCENT2, L"bolt"   },
+        { L"服务状态", L"运行中", L"等待监听", SUCCESS, L"server" },
+        { L"通信协议", L"TCP",    L"加密传输", INFO,    L"wifi"   },
     };
 
     statCards_.clear();
@@ -788,8 +1512,8 @@ void MainWindow::CreateDashboardPanel() {
         card.value       = s.value;
         card.subtext     = s.subtext;
         card.accentColor = s.accent;
-        card.iconGlyph   = L"";
-        card.iconKind    = s.kind;
+        card.iconGlyph   = s.icon;
+        card.iconKind    = 0;
 
         card.hwndPanel = CreateControl(L"STATIC", L"",
             WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
@@ -797,14 +1521,23 @@ void MainWindow::CreateDashboardPanel() {
             hwndPanelDashboard_, nullptr, nullptr);
 
         card.hwndTitle = CreateControl(L"STATIC", s.title,
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
             0, 0, 0, 0,
             card.hwndPanel, nullptr, hFontStatTitle_);
 
         card.hwndValue = CreateControl(L"STATIC", s.value,
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS | SS_NOPREFIX,
             0, 0, 0, 0,
             card.hwndPanel, nullptr, hFontStatValue_);
+
+        card.hwndSub = CreateControl(L"STATIC", s.subtext,
+            WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS | SS_NOPREFIX,
+            0, 0, 0, 0,
+            card.hwndPanel, nullptr, hFontStatSub_);
+
+        // 排版层级：标签弱、数值强、说明最弱
+        SetCtrlFg(card.hwndTitle, TEXT_SECONDARY);
+        SetCtrlFg(card.hwndSub,   TEXT_MUTED);
 
         statCards_.push_back(card);
     }
@@ -819,12 +1552,6 @@ void MainWindow::CreateCardManagementPanel() {
         0, 0, 0, 0,
         hwndContentArea_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PANEL_CARDMGMT)),
         nullptr);
-
-    // 标题
-    hwndCardTopLabel_ = CreateControl(L"STATIC", L"卡密管理",
-        WS_CHILD | WS_VISIBLE | SS_LEFT,
-        0, 0, 0, 0,
-        hwndPanelCardMgmt_, nullptr, hFontTitle_);
 
     // 搜索框
     hwndCardSearchEdit_ = CreateControl(L"EDIT", L"",
@@ -851,7 +1578,7 @@ void MainWindow::CreateCardManagementPanel() {
         hFontButton_);
 
     // 筛选（自绘按钮 + 弹出菜单，避免系统 Combo 白边）
-    hwndCardFilterBtn_ = CreateControl(L"BUTTON", L"全部 ?",
+    hwndCardFilterBtn_ = CreateControl(L"BUTTON", L"全部",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_OWNERDRAW,
         0, 0, 0, 0,
         hwndPanelCardMgmt_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CARD_FILTER_BTN)),
@@ -879,14 +1606,27 @@ void MainWindow::CreateCardManagementPanel() {
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | LVS_REPORT | LVS_SHOWSELALWAYS,
         0, 0, 0, 0,
         hwndPanelCardMgmt_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_CARD_LIST)),
-        hFontDefault_);
+        hFontLabel_);
 
     ListView_SetExtendedListViewStyle(hwndCardList_,
         LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_SUBITEMIMAGES);
-    hwndCardStateImages_ = ImageList_Create(16, 16, ILC_COLOR32 | ILC_MASK, 2, 1);
+    // 行高由图像列表尺寸决定：用 28px 高的透明图标把行撑到 30px 左右，
+    // 同时保留首列的在线状态圆点（字号放大后行高需同步增加）。
+    hwndCardStateImages_ = ImageList_Create(20, 28, ILC_COLOR32 | ILC_MASK, 2, 1);
     if (hwndCardStateImages_) {
-        HDC screen=GetDC(nullptr),mem=CreateCompatibleDC(screen);for(int i=0;i<2;++i){HBITMAP bmp=CreateCompatibleBitmap(screen,16,16);HGDIOBJ old=SelectObject(mem,bmp);RECT r{0,0,16,16};FillRect(mem,&r,(HBRUSH)GetStockObject(BLACK_BRUSH));COLORREF fill=i?RGB(35,205,90):RGB(105,112,124),edge=i?RGB(20,150,65):RGB(72,78,88);HBRUSH brush=CreateSolidBrush(fill);HGDIOBJ oldBrush=SelectObject(mem,brush);HPEN pen=CreatePen(PS_SOLID,1,edge);HGDIOBJ oldPen=SelectObject(mem,pen);Ellipse(mem,3,3,13,13);SelectObject(mem,oldPen);SelectObject(mem,oldBrush);DeleteObject(pen);DeleteObject(brush);SelectObject(mem,old);ImageList_AddMasked(hwndCardStateImages_,bmp,RGB(0,0,0));DeleteObject(bmp);}DeleteDC(mem);ReleaseDC(nullptr,screen);ListView_SetImageList(hwndCardList_,hwndCardStateImages_,LVSIL_SMALL);
+        HDC screen=GetDC(nullptr),mem=CreateCompatibleDC(screen);for(int i=0;i<2;++i){HBITMAP bmp=CreateCompatibleBitmap(screen,20,28);HGDIOBJ old=SelectObject(mem,bmp);RECT r{0,0,20,28};FillRect(mem,&r,(HBRUSH)GetStockObject(BLACK_BRUSH));COLORREF fill=i?RGB(35,205,90):RGB(120,128,142),edge=i?RGB(20,150,65):RGB(86,94,108);HBRUSH brush=CreateSolidBrush(fill);HGDIOBJ oldBrush=SelectObject(mem,brush);HPEN pen=CreatePen(PS_SOLID,1,edge);HGDIOBJ oldPen=SelectObject(mem,pen);Ellipse(mem,5,9,15,19);SelectObject(mem,oldPen);SelectObject(mem,oldBrush);DeleteObject(pen);DeleteObject(brush);SelectObject(mem,old);ImageList_AddMasked(hwndCardStateImages_,bmp,RGB(0,0,0));DeleteObject(bmp);}DeleteDC(mem);ReleaseDC(nullptr,screen);ListView_SetImageList(hwndCardList_,hwndCardStateImages_,LVSIL_SMALL);
     }
+
+    // 列表整体底色与表头字体，避免出现系统浅色
+    ListView_SetBkColor(hwndCardList_, BG_DEEP);
+    ListView_SetTextBkColor(hwndCardList_, BG_DEEP);
+    ListView_SetTextColor(hwndCardList_, TEXT_PRIMARY);
+    if (HWND hdr = ListView_GetHeader(hwndCardList_)) {
+        SendMessageW(hdr, WM_SETFONT, reinterpret_cast<WPARAM>(hFontLabel_), TRUE);
+    }
+    SetWindowSubclass(hwndCardList_, ListHoverProc,
+                      reinterpret_cast<UINT_PTR>(hwndCardList_),
+                      reinterpret_cast<DWORD_PTR>(this));
 
     w32::ListView_AddColumn(hwndCardList_, 0, L"卡密",     330);
     w32::ListView_AddColumn(hwndCardList_, 1, L"类型",     60);
@@ -938,11 +1678,6 @@ void MainWindow::CreatePluginCenterPanel() {
         hwndContentArea_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PANEL_PLUGIN)),
         nullptr);
 
-    hwndPluginTitle_ = CreateControl(L"STATIC", L"插件中心",
-        WS_CHILD | WS_VISIBLE | SS_LEFT,
-        0, 0, 0, 0,
-        hwndPanelPlugin_, nullptr, hFontTitle_);
-
     auto makePlgBtn = [&](const wchar_t* text, int id) -> HWND {
         return CreateControl(L"BUTTON", text,
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_OWNERDRAW,
@@ -974,11 +1709,11 @@ void MainWindow::CreatePluginCenterPanel() {
     ListView_SetExtendedListViewStyle(hwndPluginList_,
         LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
 
-    w32::ListView_AddColumn(hwndPluginList_, 0, L"名称",   150);
-    w32::ListView_AddColumn(hwndPluginList_, 1, L"状态",    80);
-    w32::ListView_AddColumn(hwndPluginList_, 2, L"版本",    70);
-    w32::ListView_AddColumn(hwndPluginList_, 3, L"函数数",  70);
-    w32::ListView_AddColumn(hwndPluginList_, 4, L"调用次数", 80);
+    w32::ListView_AddColumn(hwndPluginList_, 0, L"名称",   160);
+    w32::ListView_AddColumn(hwndPluginList_, 1, L"状态",    88);
+    w32::ListView_AddColumn(hwndPluginList_, 2, L"版本",    76);
+    w32::ListView_AddColumn(hwndPluginList_, 3, L"函数数",  76);
+    w32::ListView_AddColumn(hwndPluginList_, 4, L"调用次数", 88);
     w32::ListView_AddColumn(hwndPluginList_, 5, L"说明",   320);
 }
 
@@ -1074,7 +1809,7 @@ void MainWindow::CreateSettingsPanel() {
     };
 
     // ── Background Panel ──
-    HWND hSettBg = CreateControl(L"STATIC", L"",
+    hwndSettBg_ = CreateControl(L"STATIC", L"",
         WS_CHILD | WS_VISIBLE,
         10, 10, contentW_ - 40, contentH_ - 20,
         hwndPanelSettings_, nullptr, nullptr);
@@ -1083,16 +1818,11 @@ void MainWindow::CreateSettingsPanel() {
         if (hwnd) SetWindowPos(hwnd, nullptr, x, y, w, ht, SWP_NOZORDER);
     };
 
-    // ── Title ──
-    HWND hSettTitle = CreateControl(L"STATIC", L"设置",
-        WS_CHILD | WS_VISIBLE | SS_LEFT,
-        15, 8, 200, 26,
-        hwndPanelSettings_, nullptr, hFontTitle_);
-
     // ── 服务配置（合并服务器协议 + 加密密钥）──
-    int gy = 38;
+    // 页内不再重复页面标题，首个分组直接贴顶
+    int gy = 18;
     hwndSettGrpSrv_ = makeGroup(L"服务配置", 0);
-    settPos(hwndSettGrpSrv_, 15, gy, contentW_ - 55, 390);
+    settPos(hwndSettGrpSrv_, 15, gy, contentW_ - 55, 344);
 
     HWND hLblHost = makeLabel(L"监听地址:");
     HWND hLblPort = makeLabel(L"端口:");
@@ -1110,12 +1840,12 @@ void MainWindow::CreateSettingsPanel() {
     SendMessage(hwndSettPspEdit_, EM_SETPASSWORDCHAR, '*', 0);
     SendMessage(hwndSettPspEdit_, EM_SETREADONLY, TRUE, 0);
 
-    int ey = gy + 20;
+    int ey = gy + 46;   // 让出卡片标题与分隔线
     int col1 = 28, col2 = col1 + 90, col3 = col2 + 220, kw = 60;
-    int rowH = 28;
+    int rowH = 27;      // 行距随字号同步放宽
 
-    auto settLabel = [&](const wchar_t* t, int x, int yp) { settPos(makeLabel(t), x, yp, 90, 22); };
-    auto settEdit = [&](HWND h, int x, int yp, int w) { settPos(h, x, yp, w, 22); };
+    auto settLabel = [&](const wchar_t* t, int x, int yp) { settPos(makeLabel(t), x, yp, 90, 24); };
+    auto settEdit = [&](HWND h, int x, int yp, int w) { settPos(h, x, yp, w, 24); };
 
     // Row 1: 监听地址 | 端口 | 协议
     settLabel(L"监听地址:", col1, ey);
@@ -1125,11 +1855,11 @@ void MainWindow::CreateSettingsPanel() {
     settLabel(L"协议:", col2 + 290, ey);
     hwndSettProtoHttp_ = CreateControl(L"BUTTON", L"HTTP",
         WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_GROUP,
-        col2 + 330, ey, 70, 22,
+        col2 + 330, ey, 70, 24,
         hwndPanelSettings_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SETT_PROTO_HTTP)), hFontLabel_);
     hwndSettProtoTcp_ = CreateControl(L"BUTTON", L"TCP",
         WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON,
-        col2 + 408, ey, 70, 22,
+        col2 + 408, ey, 70, 24,
         hwndPanelSettings_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SETT_PROTO_TCP)), hFontLabel_);
     ey += rowH;
 
@@ -1166,19 +1896,20 @@ void MainWindow::CreateSettingsPanel() {
     CreateControl(L"STATIC",
         L"RSA密钥: keys/server_privkey.hex (服务端) / server_pubkey.hex (客户端)",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        col1, ey, contentW_ - 70, 22,
+        col1, ey, contentW_ - 70, 24,
         hwndPanelSettings_, nullptr, hFontLabel_);
 
-    ey += 30;
+    ey += 32;
     CreateControl(L"STATIC", L"自动更新（仅服务器开关开启时强制）",
-        WS_CHILD | WS_VISIBLE | SS_LEFT, col1, ey, 320, 22, hwndPanelSettings_, nullptr, hFontSectionTitle_);
+        WS_CHILD | WS_VISIBLE | SS_LEFT, col1, ey, 320, 26, hwndPanelSettings_, nullptr, hFontSectionTitle_);
     hwndSettUpdateEnable_ = CreateControl(L"BUTTON", L"启用强制更新",
-        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, col1, ey + 26, 140, 24, hwndPanelSettings_,
+        WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, col1, ey + 28, 140, 24, hwndPanelSettings_,
         reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SETT_UPDATE_ENABLE)), hFontLabel_);
-    settLabel(L"目标进程:", col2, ey + 28);
+    // 勾选框文字较长，标签必须让开，否则会叠在一起
+    settLabel(L"目标进程:", col2 + 62, ey + 30);
     hwndSettUpdateTarget_ = makeEdit(IDC_SETT_UPDATE_TARGET);
-    settEdit(hwndSettUpdateTarget_, col2 + 88, ey + 25, 190);
-    ey += 56;
+    settEdit(hwndSettUpdateTarget_, col2 + 150, ey + 27, 190);
+    ey += 58;
     settLabel(L"目标SHA256:", col1, ey);
     hwndSettUpdateHash_ = makeEdit(IDC_SETT_UPDATE_HASH);
     settEdit(hwndSettUpdateHash_, col2, ey, 340);
@@ -1192,13 +1923,13 @@ void MainWindow::CreateSettingsPanel() {
     settEdit(hwndSettUpdatePackageHash_, col2, ey, 340);
 
     // ── 卡密权限 ──
-    int permY = gy + 390 + 10;
+    int permY = gy + 344 + 10;
     hwndSettGrpPerm_ = makeGroup(L"卡密权限", 0);
-    settPos(hwndSettGrpPerm_, 15, permY, contentW_ - 55, 100);
+    settPos(hwndSettGrpPerm_, 15, permY, contentW_ - 55, 84);
 
     hwndSettPermUnbind_ = CreateControl(L"BUTTON", L"允许解绑",
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-        col1, permY + 20, 120, 22,
+        col1, permY + 20, 120, 24,
         hwndPanelSettings_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SETT_UNBIND_ENABLE)), hFontLabel_);
 
     HWND hPermDayLabel = makeLabel(L"每天解绑上限:");
@@ -1206,32 +1937,72 @@ void MainWindow::CreateSettingsPanel() {
     HWND hPermMonLabel = makeLabel(L"每月解绑上限:");
     hwndSettPermMonEdit_ = makeEdit(IDC_SETT_UNBIND_MONTH, true);
 
-    int permRowY = permY + 22;
-    settPos(hwndSettPermUnbind_, col1, permRowY, 120, 26);
-    settPos(hPermDayLabel, col2, permRowY + 2, 90, 26);
-    settPos(hwndSettPermDayEdit_, col2 + 90, permRowY - 1, 60, 26);
-    settPos(hPermMonLabel, col2 + 160, permRowY + 2, 90, 26);
-    settPos(hwndSettPermMonEdit_, col2 + 250, permRowY - 1, 60, 26);
+    int permRowY = permY + 44;
+    settPos(hwndSettPermUnbind_, col1, permRowY, 120, 24);
+    settPos(hPermDayLabel, col2, permRowY + 2, 90, 24);
+    settPos(hwndSettPermDayEdit_, col2 + 90, permRowY - 1, 60, 24);
+    settPos(hPermMonLabel, col2 + 160, permRowY + 2, 90, 24);
+    settPos(hwndSettPermMonEdit_, col2 + 250, permRowY - 1, 60, 24);
 
     // 在线并发（服务端强制）
-    int concY = permY + 110;
+    int concY = permY + 84 + 10;
     hwndSettGrpConc_ = makeGroup(L"在线并发（服务端强制）", 0);
-    settPos(hwndSettGrpConc_, 15, concY, contentW_ - 55, 90);
+    settPos(hwndSettGrpConc_, 15, concY, contentW_ - 55, 84);
     hwndSettMultiOpen_ = CreateControl(L"BUTTON", L"允许同卡多开",
         WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX,
-        col1, concY + 28, 140, 26,
+        col1, concY + 44, 140, 24,
         hwndPanelSettings_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SETT_MULTI_OPEN)), hFontLabel_);
     HWND hMaxOnlineLabel = makeLabel(L"同卡最多在线:");
     hwndSettMaxOnlineEdit_ = makeEdit(IDC_SETT_MAX_ONLINE, true);
-    settPos(hMaxOnlineLabel, col2, concY + 30, 100, 26);
-    settPos(hwndSettMaxOnlineEdit_, col2 + 100, concY + 28, 60, 26);
+    settPos(hMaxOnlineLabel, col2, concY + 46, 100, 24);
+    settPos(hwndSettMaxOnlineEdit_, col2 + 100, concY + 44, 60, 24);
     CreateControl(L"STATIC", L"关闭多开时强制为1（新登录踢掉旧会话）",
         WS_CHILD | WS_VISIBLE | SS_LEFT,
-        col2 + 180, concY + 30, 360, 26,
+        col2 + 180, concY + 46, 360, 24,
         hwndPanelSettings_, nullptr, hFontLabel_);
 
     UpdateKeyGenButtons();
     ApplySettingsToUI();
+
+    // ── 记录基准位置：设置页内容高于可视区时用滚轮下移查看 ──
+    settBaseRect_.clear();
+    settScrollY_ = 0;
+    settContentH_ = 0;
+    EnumChildWindows(hwndPanelSettings_, [](HWND child, LPARAM lp) -> BOOL {
+        auto* self = reinterpret_cast<MainWindow*>(lp);
+        // 背景板固定不动，其余控件参与滚动
+        if (child == self->hwndSettBg_) return TRUE;
+        RECT r = {};
+        GetWindowRect(child, &r);
+        MapWindowPoints(HWND_DESKTOP, self->hwndPanelSettings_,
+                        reinterpret_cast<LPPOINT>(&r), 2);
+        self->settBaseRect_[child] = r;
+        if (r.bottom > self->settContentH_) self->settContentH_ = r.bottom;
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(this));
+}
+
+// 设置页滚轮滚动：整体平移子控件（顶部 30px 的页面标题保持不动）
+void MainWindow::ScrollSettings(int dyPx) {
+    if (settBaseRect_.empty() || !hwndPanelSettings_) return;
+    RECT crc = {};
+    GetClientRect(hwndPanelSettings_, &crc);
+
+    const int maxScroll = (settContentH_ + 16 > crc.bottom)
+                        ? (settContentH_ + 16 - crc.bottom) : 0;
+    int next = settScrollY_ + dyPx;
+    if (next < 0) next = 0;
+    if (next > maxScroll) next = maxScroll;
+    if (next == settScrollY_ && dyPx != 0) return;   // dyPx==0 用于重新夹紧
+    settScrollY_ = next;
+
+    for (const auto& kv : settBaseRect_) {
+        const RECT& b = kv.second;
+        SetWindowPos(kv.first, nullptr, b.left, b.top - settScrollY_,
+                     b.right - b.left, b.bottom - b.top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    InvalidateRect(hwndPanelSettings_, nullptr, TRUE);
 }
 
 static bool KeyFileExists(const std::wstring& exeDir, const char* relPath) {
@@ -1296,10 +2067,6 @@ void MainWindow::CreateFirewallPanel() {
         hwndContentArea_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_PANEL_FIREWALL)),
         nullptr);
 
-    hwndFwTitle_ = CreateControl(L"STATIC", L"防火墙",
-        WS_CHILD | WS_VISIBLE | SS_LEFT,
-        0, 0, 0, 0,
-        hwndPanelFirewall_, nullptr, hFontTitle_);
     hwndFwRuleCard_ = CreateControl(L"STATIC", L"",
         WS_CHILD | WS_VISIBLE | SS_OWNERDRAW | WS_CLIPCHILDREN,
         0, 0, 0, 0, hwndPanelFirewall_, nullptr, nullptr);
@@ -1352,11 +2119,36 @@ void MainWindow::CreateFirewallPanel() {
 
 void MainWindow::LayoutFirewall() {
     if (!hwndPanelFirewall_ || !IsWindowVisible(hwndPanelFirewall_)) return;
-    const int pad=20; SetWindowPos(hwndFwTitle_,nullptr,pad,16,240,30,SWP_NOZORDER);
-    SetWindowPos(hwndFwRuleCard_,nullptr,pad,58,(std::max)(600,contentW_-pad*2),110,SWP_NOZORDER);
-    HWND c=GetWindow(hwndFwRuleCard_,GW_CHILD);int i=0;while(c){if(i==0)SetWindowPos(c,nullptr,20,14,180,24,SWP_NOZORDER);else if(i==1)SetWindowPos(c,nullptr,150,16,360,22,SWP_NOZORDER);c=GetWindow(c,GW_HWNDNEXT);++i;}
-    SetWindowPos(hwndFwListTitle_,nullptr,pad,190,240,26,SWP_NOZORDER);
-    SetWindowPos(hwndFwIpList_,nullptr,pad,224,(std::max)(600,contentW_-pad*2),(std::max)(100,contentH_-244),SWP_NOZORDER);
+    const int pad = 14;
+    const int cardW = (std::max)(520, contentW_ - pad * 2);
+    SetWindowPos(hwndFwRuleCard_, nullptr, pad, pad, cardW, 100, SWP_NOZORDER);
+    // 卡片内：标题 + 说明一行，三个阈值字段一行（紧凑两行式布局）
+    HWND c = GetWindow(hwndFwRuleCard_, GW_CHILD); int i = 0;
+    while (c) {
+        switch (i) {
+        case 0: SetWindowPos(c, nullptr, 18, 10, 220, 26, SWP_NOZORDER); break;  // 标题
+        case 1: SetWindowPos(c, nullptr, 18, 36, 440, 22, SWP_NOZORDER); break;  // 说明
+        case 2: SetWindowPos(c, nullptr, 18,  64, 110, 22, SWP_NOZORDER); break; // 标签1
+        case 3: SetWindowPos(c, nullptr, 130, 62,  70, 24, SWP_NOZORDER); break; // 输入1
+        case 4: SetWindowPos(c, nullptr, 215, 64, 130, 22, SWP_NOZORDER); break; // 标签2
+        case 5: SetWindowPos(c, nullptr, 348, 62,  70, 24, SWP_NOZORDER); break; // 输入2
+        case 6: SetWindowPos(c, nullptr, 435, 64, 130, 22, SWP_NOZORDER); break; // 标签3
+        case 7: SetWindowPos(c, nullptr, 568, 62,  70, 24, SWP_NOZORDER); break; // 输入3
+        default: break;
+        }
+        c = GetWindow(c, GW_HWNDNEXT); ++i;
+    }
+    SetWindowPos(hwndFwListTitle_, nullptr, pad, pad + 100 + 12, 240, 26, SWP_NOZORDER);
+    SetWindowPos(hwndFwIpList_, nullptr, pad, pad + 100 + 40, cardW,
+                 (std::max)(80, contentH_ - (pad + 100 + 54)), SWP_NOZORDER);
+
+    // 末列吸收剩余宽度
+    RECT flc{};
+    if (GetClientRect(hwndFwIpList_, &flc)) {
+        const int fixed = 190 + 88;
+        ListView_SetColumnWidth(hwndFwIpList_, 2,
+                                (std::max)(120, static_cast<int>(flc.right) - fixed - 24));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1366,11 +2158,11 @@ void MainWindow::OnSize(int width, int height) {
     clientW_ = width;
     clientH_ = height;
     contentX_ = 0;
-    contentY_ = TOP_NAV_H;
+    contentY_ = NavH();
     contentW_ = clientW_;
     // 内容区 = 客户区 - 顶栏 - 日志分割条 - 全局日志 - 状态栏
     const int splitH = 5;
-    contentH_ = clientH_ - TOP_NAV_H - splitH - globalLogH_ - statusBarH_;
+    contentH_ = clientH_ - NavH() - splitH - globalLogH_ - statusBarH_;
     if (contentH_ < 120) contentH_ = 120;
     Layout();
 }
@@ -1380,17 +2172,17 @@ void MainWindow::Layout() {
 
     const int splitH = 5;
     int logTop = clientH_ - statusBarH_ - globalLogH_;
-    if (logTop < TOP_NAV_H + 80) logTop = TOP_NAV_H + 80;
+    if (logTop < NavH() + 80) logTop = NavH() + 80;
     globalLogH_ = clientH_ - statusBarH_ - logTop;
-    contentH_ = logTop - splitH - TOP_NAV_H;
+    contentH_ = logTop - splitH - NavH();
     if (contentH_ < 120) contentH_ = 120;
     contentW_ = clientW_;
 
     // 顶栏
-    SetWindowPos(hwndTopNav_, nullptr, 0, 0, clientW_, TOP_NAV_H, SWP_NOZORDER);
+    SetWindowPos(hwndTopNav_, nullptr, 0, 0, clientW_, NavH(), SWP_NOZORDER);
 
     // 内容区（顶栏下、日志上）
-    SetWindowPos(hwndContentArea_, nullptr, 0, TOP_NAV_H,
+    SetWindowPos(hwndContentArea_, nullptr, 0, NavH(),
                  contentW_, contentH_, SWP_NOZORDER);
 
     // only resize active panel, skip hidden panels to avoid z-order pollution
@@ -1408,7 +2200,7 @@ void MainWindow::Layout() {
     }
 
     // 日志分割条 + 全局日志（始终可见）
-    SetWindowPos(hwndLogSplitter_, nullptr, 0, TOP_NAV_H + contentH_,
+    SetWindowPos(hwndLogSplitter_, nullptr, 0, NavH() + contentH_,
                  clientW_, splitH, SWP_NOZORDER | SWP_SHOWWINDOW);
     SetWindowPos(hwndPanelLogs_, nullptr, 0, logTop,
                  clientW_, globalLogH_, SWP_NOZORDER | SWP_SHOWWINDOW);
@@ -1434,22 +2226,133 @@ void MainWindow::Layout() {
 void MainWindow::LayoutDashboard() {
     if (!hwndPanelDashboard_ || !IsWindowVisible(hwndPanelDashboard_)) return;
 
-    int pad=24,y=18;
-    SetWindowPos(hwndDashTitle_,nullptr,pad,y,200,30,SWP_NOZORDER);
-    SetWindowPos(hwndDashSummary_,nullptr,pad,y+31,320,22,SWP_NOZORDER); y+=68;
+    // ── 三段式纵向布局：KPI 行 → 运行概览卡 → 快捷操作栏 ──
+    // 卡片窗口每侧比视觉卡片大 kCardPad，用来承载落影；
+    // 因此窗口之间可以零间隙，视觉间距完全由落影留白决定。
+    const int margin = 20;    // 视觉外边距
+    const int vGap   = 14;    // 视觉间距
+    const int bottom = 20;    // 内容区底部留白
+    const int quickH = 78;    // 快捷操作栏高度
+
+    auto clampI = [](int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); };
+
+    // 内容区高度随皮肤导航栏而变（皮肤3=375，皮肤1/2=371）：
+    // KPI 118 + 概览 100 + 快捷 78 + 边距 68 恰好填满，因此概览卡最小高度按
+    // “标题 + 2 行键值”（100）取值，两套皮肤的导航高度都放得下。
+    const int kpiH   = 118;
+    const int ovMin  = 100;   // 概览卡最小可用高度（标题 + 2 行键值）
+    const int ovMax  = 112;   // 概览卡上限，再富余的部分转为整块居中留白
+    const int kpiMin = 92;    // 空间不足时 KPI 卡的下限
+
+    int kpiCardH = kpiH;
+    int ovH      = 0;
+    const int avail = contentH_ - margin - bottom - vGap * 2 - quickH;
+    if (avail >= kpiH + ovMin) {
+        ovH = (avail - kpiH > ovMax) ? ovMax : (avail - kpiH);
+    } else if (avail > kpiMin) {
+        kpiCardH = clampI(avail, kpiMin, kpiH);   // 空间不足：收起概览卡，KPI 卡吸收
+    } else {
+        kpiCardH = clampI(avail, 60, kpiH);
+    }
+
+    const int stackH = kpiCardH + vGap + (ovH > 0 ? ovH + vGap : 0) + quickH;
+    const int slack  = contentH_ - margin - bottom - stackH;
+    const int rowTop = margin + (slack > 0 ? slack / 2 : 0);
+
+    // ── KPI 行 ────────────────────────────────────────────
     const int n = static_cast<int>(statCards_.size());
-    const int gap=14; int cols=contentW_>=900?4:2;
-    int cardW=(contentW_-pad*2-gap*(cols-1))/cols;int cardH=112;
+    const int cols = (contentW_ >= 640) ? 4 : 2;   // 窗口偏窄时仍保持一行 4 卡
+    const int vw = (contentW_ - margin * 2 - vGap * (cols - 1)) / cols;
+    const int cardW = vw + kCardPad * 2;
+    const int cardH = kpiCardH + kCardPad * 2;
+    const int stepX = vw + vGap;
+    const int stepY = kpiCardH + vGap;
+    const int chipS = 34;     // 图标容器边长
+    const int tx    = kCardPad + 16 + chipS + 12;
+    // 文字块高度：标签 18 + 间隔 2 + 数值 34 + 间隔 2 + 说明 16 = 72
+    const int blkH  = 72;
+    const int blkY  = kCardPad + (kpiCardH - blkH) / 2;   // 卡高变化时文字块保持居中
 
     for (int i = 0; i < n; ++i) {
-        int row=i/cols,col=i%cols,cx=pad+col*(cardW+gap),cy=y+row*(cardH+gap);
-        SetWindowPos(statCards_[i].hwndPanel,nullptr,cx,cy,cardW,cardH,SWP_NOZORDER);
-        SetWindowPos(statCards_[i].hwndTitle,nullptr,20,18,cardW-40,22,SWP_NOZORDER);
-        SetWindowPos(statCards_[i].hwndValue,nullptr,20,50,cardW-40,42,SWP_NOZORDER);
-        InvalidateRect(statCards_[i].hwndPanel, nullptr, TRUE);
+        const int row = i / cols, col = i % cols;
+        const int cx = margin - kCardPad + col * stepX;
+        const int cy = rowTop + row * stepY;
+
+        SetWindowPos(statCards_[i].hwndPanel, nullptr, cx, cy, cardW, cardH, SWP_NOZORDER);
+
+        const int tw = vw - (tx - kCardPad) - 14;
+        SetWindowPos(statCards_[i].hwndTitle, nullptr, tx, blkY,      tw, 18, SWP_NOZORDER);
+        SetWindowPos(statCards_[i].hwndValue, nullptr, tx, blkY + 20, tw, 34, SWP_NOZORDER);
+        SetWindowPos(statCards_[i].hwndSub,   nullptr, tx, blkY + 56, tw, 16, SWP_NOZORDER);
+        InvalidateRect(statCards_[i].hwndPanel, nullptr, FALSE);
     }
-    int rows=(n+cols-1)/cols;y+=rows*(cardH+gap)+8;
-    SetWindowPos(hwndDashQuickPanel_,nullptr,pad,y,(std::max)(430,contentW_-pad*2),100,SWP_NOZORDER);
+
+    // ── 运行概览卡 ────────────────────────────────────────
+    const int ovY = rowTop + kpiCardH + vGap;
+    if (ovH > 0 && hwndDashOverviewPanel_) {
+        ShowWindow(hwndDashOverviewPanel_, SW_SHOW);
+        SetWindowPos(hwndDashOverviewPanel_, nullptr, margin - kCardPad, ovY,
+                     contentW_ - margin * 2 + kCardPad * 2, ovH + kCardPad * 2, SWP_NOZORDER);
+        InvalidateRect(hwndDashOverviewPanel_, nullptr, TRUE);
+
+        const int innerW = contentW_ - margin * 2;
+        SetWindowPos(hwndDashOverviewTitle_, nullptr, kCardPad + 20, kCardPad + 8,
+                     200, 26, SWP_NOZORDER);
+        if (hwndDashOverviewHint_) {
+            const int hintW = 250;
+            SetWindowPos(hwndDashOverviewHint_, nullptr,
+                         kCardPad + innerW - 20 - hintW, kCardPad + 12, hintW, 22,
+                         SWP_NOZORDER);
+        }
+
+        // 键值网格：3 列 × 最多 2 行（行优先），行数按卡片实际高度自适应
+        const int keyW   = 62;
+        const int gutter = 16;
+        const int colW   = (innerW - 40 - gutter * (kOvCols - 1)) / kOvCols;
+        const int rowH   = 24;
+        int fitRows = (ovH - 52) / rowH;
+        if (fitRows > kOvRows) fitRows = kOvRows;
+        if (fitRows < 0) fitRows = 0;
+
+        for (int i = 0; i < kOvCols * kOvRows; ++i) {
+            HWND hk = hwndOvKey_[i];
+            HWND hv = hwndOvVal_[i];
+            if (!hk || !hv) continue;
+            const int col = i % kOvCols;   // 列号
+            const int r   = i / kOvCols;   // 行号
+            const bool vis = (r < fitRows);
+            ShowWindow(hk, vis ? SW_SHOW : SW_HIDE);
+            ShowWindow(hv, vis ? SW_SHOW : SW_HIDE);
+            if (!vis) continue;
+
+            const int cx = kCardPad + 20 + col * (colW + gutter);
+            const int cy = kCardPad + 44 + r * rowH;
+            SetWindowPos(hk, nullptr, cx, cy, keyW, rowH, SWP_NOZORDER);
+            SetWindowPos(hv, nullptr, cx + keyW, cy, colW - keyW, rowH, SWP_NOZORDER);
+        }
+    } else if (hwndDashOverviewPanel_) {
+        ShowWindow(hwndDashOverviewPanel_, SW_HIDE);
+    }
+
+    // ── 快捷操作栏 ────────────────────────────────────────
+    const int quickY = rowTop + kpiCardH + vGap + (ovH > 0 ? ovH + vGap : 0);
+    SetWindowPos(hwndDashQuickPanel_, nullptr, margin - kCardPad, quickY,
+                 contentW_ - margin * 2 + kCardPad * 2, quickH + kCardPad * 2, SWP_NOZORDER);
+
+    // 左侧文字块与右侧按钮组各自垂直居中
+    {
+        const int blkTop = kCardPad + (quickH - 46) / 2;
+        SetWindowPos(hwndDashQuickTitle_, nullptr, kCardPad + 20, blkTop,      200, 26, SWP_NOZORDER);
+        SetWindowPos(hwndDashQuickHint_,  nullptr, kCardPad + 21, blkTop + 26, 240, 20, SWP_NOZORDER);
+
+        const int btnW = 118, btnH = 32;
+        const int rightPad = 20;
+        const int btnY = kCardPad + (quickH - btnH) / 2;
+        const int r = contentW_ - margin - rightPad;
+        SetWindowPos(hwndDashRefreshBtn_,  nullptr, r - btnW, btnY, btnW, btnH, SWP_NOZORDER);
+        SetWindowPos(hwndDashGenerateBtn_, nullptr, r - btnW * 2 - 10, btnY, btnW, btnH, SWP_NOZORDER);
+    }
+    InvalidateRect(hwndDashQuickPanel_, nullptr, TRUE);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1458,53 +2361,70 @@ void MainWindow::LayoutDashboard() {
 void MainWindow::LayoutCardManagement() {
     if (!hwndPanelCardMgmt_ || !IsWindowVisible(hwndPanelCardMgmt_)) return;
 
-    int pad = 15;
-    int y = pad + 5;
+    const int pad = 14;
+    int y = pad;   // 页内无标题，工具栏直接贴顶
 
-    // 标题
-    SetWindowPos(hwndCardTopLabel_, nullptr, pad, y, 200, 28, SWP_NOZORDER);
-    y += 34;
+    // 主工具栏：搜索框 | 搜索 | 筛选 || 生成 导入 导出 删除
+    // 次要工具栏：解绑 备注 || 全选 取消全选 复制所选（右对齐）
+    // 窄窗（896px）下所有按钮挤一行会互相重叠，故拆成两行，
+    // 按“主操作在上、批量操作在下”的信息层级分配。
+    const int searchW = 150;
+    const int comboW  = 80;
+    const int btnH    = 28;
 
-    // 工具栏行: 搜索 | 筛选 | 生成 导入 导出 删除 解绑
-    int searchW = 180;
-    int comboW = 90;
-    int btnW = 78;
-    int btnH = 28;
+    SetWindowPos(hwndCardSearchEdit_,  nullptr, pad,                y, searchW, btnH, SWP_NOZORDER);
+    SetWindowPos(hwndCardSearchBtn_,   nullptr, pad + searchW + 8,  y, 66,     btnH, SWP_NOZORDER);
+    SetWindowPos(hwndCardFilterBtn_,   nullptr, pad + searchW + 82, y, comboW,  btnH, SWP_NOZORDER);
 
-    SetWindowPos(hwndCardSearchEdit_,  nullptr, pad,              y, searchW,      btnH, SWP_NOZORDER);
-    SetWindowPos(hwndCardSearchBtn_,   nullptr, pad+searchW+10,   y, 54,           btnH, SWP_NOZORDER);
-    SetWindowPos(hwndCardFilterBtn_,   nullptr, pad+searchW+74,   y, comboW,       btnH, SWP_NOZORDER);
-
-    int btnX = pad + searchW + comboW + 86;
-    SetWindowPos(hwndCardGenerateBtn_, nullptr, btnX, y, btnW, btnH, SWP_NOZORDER); btnX += btnW + 10;
-    SetWindowPos(hwndCardImportBtn_,   nullptr, btnX, y, btnW, btnH, SWP_NOZORDER); btnX += btnW + 10;
-    SetWindowPos(hwndCardExportBtn_,   nullptr, btnX, y, btnW, btnH, SWP_NOZORDER); btnX += btnW + 10;
-    SetWindowPos(hwndCardDeleteBtn_,   nullptr, btnX, y, btnW, btnH, SWP_NOZORDER); btnX += btnW + 10;
-    SetWindowPos(hwndCardUnbindBtn_,   nullptr, btnX, y, btnW, btnH, SWP_NOZORDER); btnX += btnW + 10;
-    SetWindowPos(GetDlgItem(hwndPanelCardMgmt_, IDC_CARD_REMARK_BTN), nullptr, btnX, y, btnW, btnH, SWP_NOZORDER); btnX += btnW + 10;
-
-    // 全选/取消全选/复制所选 - 放在同一行
-    HWND btns3[] = { GetDlgItem(hwndCardBottomBtns_, IDC_CARD_SELECT_ALL),
-                     GetDlgItem(hwndCardBottomBtns_, IDC_CARD_DESELECT_ALL),
-                     GetDlgItem(hwndCardBottomBtns_, IDC_CARD_COPY_SELECTED) };
-    for (auto hb : btns3) {
-        if (hb) { SetWindowPos(hb, nullptr, btnX, y, btnW + 12, btnH, SWP_NOZORDER); btnX += btnW + 24; }
-    }
+    int btnX = pad + searchW + comboW + 94;
+    SetWindowPos(hwndCardGenerateBtn_, nullptr, btnX, y, 84, btnH, SWP_NOZORDER); btnX += 92;
+    SetWindowPos(hwndCardImportBtn_,   nullptr, btnX, y, 76, btnH, SWP_NOZORDER); btnX += 84;
+    SetWindowPos(hwndCardExportBtn_,   nullptr, btnX, y, 76, btnH, SWP_NOZORDER); btnX += 84;
+    SetWindowPos(hwndCardDeleteBtn_,   nullptr, btnX, y, 76, btnH, SWP_NOZORDER);
     y += btnH + 8;
 
-    // 卡密列表 — 上半部分（+150px）
+    // 次行：解绑 / 备注（左） + 批量选择（右）
+    SetWindowPos(hwndCardUnbindBtn_, nullptr, pad, y, 72, btnH, SWP_NOZORDER);
+    SetWindowPos(GetDlgItem(hwndPanelCardMgmt_, IDC_CARD_REMARK_BTN),
+                 nullptr, pad + 80, y, 72, btnH, SWP_NOZORDER);
+    {
+        const int selW = 94, gap = 6;
+        const int totalW = selW * 3 + gap * 2;
+        if (hwndCardBottomBtns_)
+            SetWindowPos(hwndCardBottomBtns_, nullptr, contentW_ - pad - totalW, y,
+                         totalW, btnH, SWP_NOZORDER);
+        HWND btns3[] = { GetDlgItem(hwndCardBottomBtns_, IDC_CARD_SELECT_ALL),
+                         GetDlgItem(hwndCardBottomBtns_, IDC_CARD_DESELECT_ALL),
+                         GetDlgItem(hwndCardBottomBtns_, IDC_CARD_COPY_SELECTED) };
+        int sx = 0;
+        for (auto hb : btns3) {
+            if (!hb) continue;
+            SetWindowPos(hb, nullptr, sx, 0, selW, btnH, SWP_NOZORDER);
+            sx += selW + gap;
+        }
+    }
+    y += btnH + 10;
+
+    // 卡密列表
     splitterPos_ = contentH_ - 10;
     int listH = splitterPos_ - y;
     if (listH < 80) listH = 80;
     SetWindowPos(hwndCardList_, nullptr, pad, y, contentW_ - pad*2, listH, SWP_NOZORDER);
-    // Keep the columns inside the client area so the native light horizontal
-    // scrollbar and its white bottom-right corner are never exposed.
-    RECT cardListClient{};
-    if (GetClientRect(hwndCardList_, &cardListClient)) {
-        constexpr int fixedColumnWidth = 330 + 60 + 80 + 80 + 160 + 160 + 160;
-        const int availableWidth = static_cast<int>(cardListClient.right) - fixedColumnWidth - 4;
-        const int remarkWidth = (std::max)(120, availableWidth);
-        ListView_SetColumnWidth(hwndCardList_, 7, remarkWidth);
+    // 列宽按紧凑窗口重算：固定列合计必须小于列表宽度，
+    // 否则会露出原生浅色横向滚动条（以及右下角白块）。
+    {
+        const int kCols[7] = { 200, 48, 54, 78, 132, 120, 120 };  // 0..6
+        int fixed = 0;
+        for (int i = 0; i < 7; ++i) { ListView_SetColumnWidth(hwndCardList_, i, kCols[i]); fixed += kCols[i]; }
+        RECT cardListClient{};
+        if (GetClientRect(hwndCardList_, &cardListClient)) {
+            // 纵向滚动条占的是客户区宽度，必须一起扣掉，
+            // 否则会露出原生横向滚动条。
+            const int availableWidth =
+                static_cast<int>(cardListClient.right) - fixed - 4 - 20;
+            const int remarkWidth = (std::max)(80, availableWidth);
+            ListView_SetColumnWidth(hwndCardList_, 7, remarkWidth);
+        }
     }
     y += listH;
 
@@ -1523,28 +2443,33 @@ void MainWindow::LayoutCardManagement() {
 void MainWindow::LayoutPluginCenter() {
     if (!hwndPanelPlugin_ || !IsWindowVisible(hwndPanelPlugin_)) return;
 
-    int pad = 15;
-    int y = pad + 5;
+    const int pad = 14;
+    int y = pad;   // 页内无标题，操作按钮直接贴顶
 
-    SetWindowPos(hwndPluginTitle_, nullptr, pad, y, 200, 28, SWP_NOZORDER);
-    y += 36;
-
-    int btnW = 160, btnH = 30;
+    const int btnW = 132, btnH = 30;
     SetWindowPos(hwndPluginRefreshBtn_, nullptr, pad, y, btnW, btnH, SWP_NOZORDER);
-    SetWindowPos(hwndPluginExecBtn_,    nullptr, pad*2 + btnW, y, btnW, btnH, SWP_NOZORDER);
+    SetWindowPos(hwndPluginExecBtn_,    nullptr, pad + btnW + 10, y, btnW, btnH, SWP_NOZORDER);
     y += btnH + 8;
 
     // 参数输入行
     if (hwndPluginParamEdit_) {
         HWND hPlgParamLabel = GetWindow(hwndPluginParamEdit_, GW_HWNDPREV);
-        if (hPlgParamLabel) SetWindowPos(hPlgParamLabel, nullptr, pad, y, 90, 24, SWP_NOZORDER);
-        SetWindowPos(hwndPluginParamEdit_, nullptr, pad + 90, y, contentW_ - pad*2 - 90, 24, SWP_NOZORDER);
-        y += 30;
+        if (hPlgParamLabel) SetWindowPos(hPlgParamLabel, nullptr, pad, y, 86, 26, SWP_NOZORDER);
+        SetWindowPos(hwndPluginParamEdit_, nullptr, pad + 86, y, contentW_ - pad*2 - 86, 26, SWP_NOZORDER);
+        y += 32;
     }
 
     int listH = contentH_ - y - pad;
     if (listH < 40) listH = 40;
     SetWindowPos(hwndPluginList_, nullptr, pad, y, contentW_ - pad*2, listH, SWP_NOZORDER);
+
+    // 说明列吸收剩余宽度，避免表格右侧留白
+    RECT plc{};
+    if (GetClientRect(hwndPluginList_, &plc)) {
+        const int fixed = 160 + 88 + 76 + 76 + 88;
+        ListView_SetColumnWidth(hwndPluginList_, 5,
+                                (std::max)(200, static_cast<int>(plc.right) - fixed - 4));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1553,20 +2478,30 @@ void MainWindow::LayoutPluginCenter() {
 void MainWindow::LayoutGlobalLog() {
     if (!hwndPanelLogs_) return;
 
-    int pad = 10;
-    int y = 6;
-    int btnW = 72, btnH = 24;
+    const int pad  = 14;
+    const int hdrH = 36;
+    const int btnH = 24;
 
-    SetWindowPos(hwndLogTitle_, nullptr, pad, y + 2, 48, 22, SWP_NOZORDER);
-    SetWindowPos(hwndLogClearBtn_,  nullptr, pad + 56, y, btnW, btnH, SWP_NOZORDER);
-    SetWindowPos(hwndLogExportBtn_, nullptr, pad + 56 + btnW + 8, y, btnW, btnH, SWP_NOZORDER);
-    SetWindowPos(hwndLogAutoScrollChk_, nullptr,
-                 pad + 56 + (btnW + 8) * 2 + 10, y - 2, btnW + 20, btnH + 4, SWP_NOZORDER);
-    y += btnH + 6;
+    // 标题与绘制在面板上的强调圆点对齐
+    SetWindowPos(hwndLogTitle_, nullptr, pad + 14, (hdrH - 26) / 2 + 1, 70, 26, SWP_NOZORDER);
 
-    int editH = globalLogH_ - y - pad;
+    // 工具按钮统一右对齐，贴近视觉重心
+    const int btnY = (hdrH - btnH) / 2;
+    int x = clientW_ - pad;
+    auto place = [&](HWND h, int w) {
+        if (!h) return;
+        x -= w;
+        SetWindowPos(h, nullptr, x, btnY, w, btnH, SWP_NOZORDER);
+        x -= 8;
+    };
+    place(hwndLogAutoScrollChk_, 108);
+    place(hwndLogExportBtn_, 72);
+    place(hwndLogClearBtn_, 72);
+
+    const int editTop = hdrH + 2;
+    int editH = globalLogH_ - editTop - 10;
     if (editH < 40) editH = 40;
-    SetWindowPos(hwndLogEdit_, nullptr, pad, y,
+    SetWindowPos(hwndLogEdit_, nullptr, pad, editTop,
                  clientW_ - pad * 2, editH, SWP_NOZORDER);
 }
 
@@ -1575,7 +2510,14 @@ void MainWindow::LayoutGlobalLog() {
 // ═══════════════════════════════════════════════════════════
 void MainWindow::LayoutSettings() {
     if (!hwndPanelSettings_ || !IsWindowVisible(hwndPanelSettings_)) return;
-    // Positions already set in CreateSettingsPanel — just ensure panel fills
+    // 控件在创建时已按最终尺寸落位，这里只处理随内容区变化的部分：
+    // 背景板尺寸 + 滚动位置夹紧（内容高于可视区时可用滚轮查看下方分组）
+    if (hwndSettBg_) {
+        SetWindowPos(hwndSettBg_, nullptr, 10, 10,
+                     (std::max)(200, contentW_ - 40),
+                     (std::max)(120, contentH_ - 20), SWP_NOZORDER);
+    }
+    if (!settBaseRect_.empty()) ScrollSettings(0);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1647,14 +2589,37 @@ void MainWindow::UpdateDashboardStats() {
             else if (c.status == 0) used++;
         }
 
-        statCards_[0].value = std::to_wstring(total) + L" 张";
-        statCards_[1].value = std::to_wstring(active) + L" / " + std::to_wstring(expired);
-        statCards_[2].value = L"● 运行中 :" + std::to_wstring(config_.port);
-        statCards_[3].value = protocolMode_ == 1 ? L"HTTP" : L"TCP";
+        statCards_[0].value   = std::to_wstring(total);
+        statCards_[0].subtext = L"未使用 " + std::to_wstring(used);
+        statCards_[1].value   = std::to_wstring(active);
+        statCards_[1].subtext = L"已过期 " + std::to_wstring(expired);
+        statCards_[2].value   = serverRunning_ ? L"运行中" : L"已停止";
+        statCards_[2].subtext = L"端口 " + std::to_wstring(config_.port);
+        statCards_[2].accentColor = serverRunning_ ? SUCCESS : ERROR_COLOR;
+        statCards_[3].value   = protocolMode_ == 1 ? L"HTTP" : L"TCP";
+        statCards_[3].subtext = L"加密传输";
 
         for (auto& sc : statCards_) {
             if (sc.hwndValue) SetWindowText(sc.hwndValue, sc.value.c_str());
+            if (sc.hwndSub)   SetWindowText(sc.hwndSub,   sc.subtext.c_str());
         }
+
+        // 服务状态卡的强调色跟随运行状态，仅在变化时重绘，避免周期性闪烁
+        static COLORREF s_lastSrvAccent = (COLORREF)-1;
+        if (statCards_[2].accentColor != s_lastSrvAccent) {
+            s_lastSrvAccent = statCards_[2].accentColor;
+            if (statCards_[2].hwndPanel)
+                InvalidateRect(statCards_[2].hwndPanel, nullptr, FALSE);
+        }
+    }
+
+    // 运行概览卡：键值网格第 0 项=监听地址、第 1 项=协议模式，跟随实际配置
+    if (hwndOvVal_[0]) {
+        std::wstring addr = L"127.0.0.1:" + std::to_wstring(config_.port);
+        SetWindowText(hwndOvVal_[0], addr.c_str());
+    }
+    if (hwndOvVal_[1]) {
+        SetWindowText(hwndOvVal_[1], (protocolMode_ == 1) ? L"HTTP" : L"TCP");
     }
 }
 
@@ -1716,7 +2681,7 @@ void MainWindow::OnCommand(WPARAM wp) {
         case IDC_CARD_FILTER_DISABLED: {
             cardFilterIndex_ = id - IDC_CARD_FILTER_ALL;
             config_.card_filter = cardFilterIndex_;
-            static const wchar_t* labels[] = { L"全部 ?", L"已激活 ?", L"已过期 ?", L"已禁用 ?" };
+            static const wchar_t* labels[] = { L"全部", L"已激活", L"已过期", L"已禁用" };
             if (hwndCardFilterBtn_ && cardFilterIndex_ >= 0 && cardFilterIndex_ < 4)
                 SetWindowTextW(hwndCardFilterBtn_, labels[cardFilterIndex_]);
             RefreshCardList();
@@ -1738,8 +2703,9 @@ void MainWindow::OnCommand(WPARAM wp) {
         case IDC_LOG_AUTOSCROLL_CHK:
             logAutoScroll_ = !logAutoScroll_;
             config_.log_auto_scroll = logAutoScroll_;
-            SetWindowTextW(hwndLogAutoScrollChk_, logAutoScroll_ ? L"? 自动滚动" : L"? 暂停滚动");
-            InvalidateRect(hwndLogAutoScrollChk_, nullptr, TRUE);
+            SetWindowTextW(hwndLogAutoScrollChk_, logAutoScroll_ ? L"自动滚动" : L"暂停滚动");
+            SetBtnChecked(hwndLogAutoScrollChk_, logAutoScroll_);
+            InvalidateRect(hwndLogAutoScrollChk_, nullptr, FALSE);
             SaveConfig();
             break;
         case IDB_CLEAR_LOG:         ClearLog(); break;
@@ -1843,14 +2809,52 @@ LRESULT MainWindow::OnNotify(LPARAM lp) {
     if (nmh->hwndFrom == hwndCardList_) {
         if (nmh->code == NM_CUSTOMDRAW) {
             auto* draw = reinterpret_cast<LPNMLVCUSTOMDRAW>(lp);
-            if (draw->nmcd.dwDrawStage == CDDS_PREPAINT)
+            switch (draw->nmcd.dwDrawStage) {
+            case CDDS_PREPAINT:
                 return CDRF_NOTIFYITEMDRAW;
-            if (draw->nmcd.dwDrawStage == CDDS_ITEMPREPAINT)
+
+            case CDDS_ITEMPREPAINT: {
+                // 行底色：选中 > 悬停 > 斑马纹
+                const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+                const bool sel = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
+                if (sel)
+                    draw->clrTextBk = peanut::ui::MixColor(ACCENT, BG_DEEP, 0.72f);
+                else if (row == cardListHot_)
+                    draw->clrTextBk = peanut::ui::MixColor(ACCENT, BG_DEEP, 0.90f);
+                else
+                    draw->clrTextBk = (row & 1)
+                        ? peanut::ui::MixColor(BG_DEEP, BG_CARD, 0.34f)
+                        : BG_DEEP;
+                draw->clrText = TEXT_PRIMARY;
                 return CDRF_NOTIFYSUBITEMDRAW;
-            if (draw->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
-                if (draw->iSubItem == 0 && hFontCardKey_)
-                    SelectObject(draw->nmcd.hdc, hFontCardKey_);
+            }
+
+            case (CDDS_ITEMPREPAINT | CDDS_SUBITEM): {
+                const int row = static_cast<int>(draw->nmcd.dwItemSpec);
+                const bool sel = (draw->nmcd.uItemState & CDIS_SELECTED) != 0;
+                switch (draw->iSubItem) {
+                case 0:   // 卡密：主信息，等宽字体
+                    if (hFontCardKey_) SelectObject(draw->nmcd.hdc, hFontCardKey_);
+                    draw->clrText = sel ? TEXT_PRIMARY : TEXT_PRIMARY;
+                    break;
+                case 3: { // 状态：按语义着色
+                    wchar_t st[32] = {};
+                    ListView_GetItemText(hwndCardList_, row, 3, st, 32);
+                    if (wcscmp(st, L"已激活") == 0)      draw->clrText = SUCCESS;
+                    else if (wcscmp(st, L"已过期") == 0) draw->clrText = WARNING;
+                    else if (wcscmp(st, L"已禁用") == 0) draw->clrText = ERROR_COLOR;
+                    else                                  draw->clrText = TEXT_MUTED;
+                    break;
+                }
+                default:  // 其余列退到次要层级，避免整行同权
+                    draw->clrText = sel ? TEXT_PRIMARY : TEXT_SECONDARY;
+                    break;
+                }
                 return CDRF_NEWFONT;
+            }
+
+            default:
+                break;
             }
         }
         switch (nmh->code) {
@@ -1893,8 +2897,8 @@ void MainWindow::OnPaint() {
     // 顶栏底部分割线
     if (hwndTopNav_) {
         HPEN old = static_cast<HPEN>(SelectObject(hdc, hPenBorder_));
-        MoveToEx(hdc, 0, TOP_NAV_H - 1, nullptr);
-        LineTo(hdc, rc.right, TOP_NAV_H - 1);
+        MoveToEx(hdc, 0, NavH() - 1, nullptr);
+        LineTo(hdc, rc.right, NavH() - 1);
         SelectObject(hdc, old);
     }
 
@@ -1956,23 +2960,23 @@ void MainWindow::OnDrawItem(WPARAM wp, LPARAM lp) {
         RECT mid = dis->rcItem;
         int cy = (dis->rcItem.top + dis->rcItem.bottom) / 2;
         mid.top = cy; mid.bottom = cy + 1;
-        mid.left += (dis->rcItem.right - dis->rcItem.left) / 3;
-        mid.right -= (dis->rcItem.right - dis->rcItem.left) / 3;
-        HBRUSH line = CreateSolidBrush(BORDER);
-        FillRect(dis->hDC, &mid, line);
-        DeleteObject(line);
+        int totalW = dis->rcItem.right - dis->rcItem.left;
+        mid.left  += totalW / 4;
+        mid.right -= totalW / 4;
+        RECT left = mid, right = mid;
+        left.right  = mid.left + (mid.right - mid.left) / 2;
+        right.left  = left.right;
+        FillHGradientLine(dis->hDC, left,  DIVIDER, ACCENT);
+        FillHGradientLine(dis->hDC, right, ACCENT,  DIVIDER);
         return;
     }
 
     // 自绘状态栏
     if (dis->hwndItem == hwndStatusBar_) {
-        FillRect(dis->hDC, &dis->rcItem, hBrushSidebar_);
-        HPEN pen = CreatePen(PS_SOLID, 1, BORDER);
-        HPEN oldPen = static_cast<HPEN>(SelectObject(dis->hDC, pen));
-        MoveToEx(dis->hDC, dis->rcItem.left, dis->rcItem.top, nullptr);
-        LineTo(dis->hDC, dis->rcItem.right, dis->rcItem.top);
-        SelectObject(dis->hDC, oldPen);
-        DeleteObject(pen);
+        FillVGradient(dis->hDC, dis->rcItem, BG_TOPNAV2, BG_TOPNAV);
+        RECT ln = { dis->rcItem.left, dis->rcItem.top,
+                    dis->rcItem.right, dis->rcItem.top + 1 };
+        FillHGradientLine(dis->hDC, ln, ACCENT, DIVIDER);
 
         SetBkMode(dis->hDC, TRANSPARENT);
         SetTextColor(dis->hDC, TEXT_SECONDARY);
@@ -1984,8 +2988,20 @@ void MainWindow::OnDrawItem(WPARAM wp, LPARAM lp) {
         for (int i = 0; i < 4; ++i) {
             RECT r = { x, dis->rcItem.top, x + widths[i], dis->rcItem.bottom };
             COLORREF fg = TEXT_SECONDARY;
-            if (i == 0)
+            if (i == 0) {
                 fg = isConnected_ ? SUCCESS : TEXT_MUTED;
+                int cy = (dis->rcItem.top + dis->rcItem.bottom) / 2;
+                HBRUSH dot = CreateSolidBrush(fg);
+                HPEN   dp  = CreatePen(PS_SOLID, 1, fg);
+                HGDIOBJ ob = SelectObject(dis->hDC, dot);
+                HGDIOBJ op = SelectObject(dis->hDC, dp);
+                Ellipse(dis->hDC, x, cy - 4, x + 8, cy + 4);
+                SelectObject(dis->hDC, ob);
+                SelectObject(dis->hDC, op);
+                DeleteObject(dp);
+                DeleteObject(dot);
+                r.left += 14;
+            }
             SetTextColor(dis->hDC, fg);
             DrawTextW(dis->hDC, statusParts_[i].c_str(), -1, &r,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
@@ -1999,37 +3015,125 @@ void MainWindow::OnDrawItem(WPARAM wp, LPARAM lp) {
     const bool isSettingsGroup = (dis->hwndItem == hwndSettGrpSrv_ ||
                                   dis->hwndItem == hwndSettGrpPerm_ ||
                                   dis->hwndItem == hwndSettGrpConc_);
-    if (dis->hwndItem == hwndDashQuickPanel_ || dis->hwndItem == hwndFwRuleCard_ || isSettingsGroup) {
-        COLORREF cardBg = isSettingsGroup ? BG_DEEP : BG_CARD;
-        HBRUSH br = CreateSolidBrush(cardBg);
-        FillRect(dis->hDC, &dis->rcItem, br);
-        DeleteObject(br);
-        constexpr COLORREF BORDER_BROWN = RGB(72, 68, 58);
-        COLORREF borderColor = isSettingsGroup ? BORDER_BROWN : BORDER;
-        HPEN pen = CreatePen(PS_SOLID, 1, borderColor);
-        HPEN old = (HPEN)SelectObject(dis->hDC, pen);
-        HBRUSH oldBr = (HBRUSH)SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
-        Rectangle(dis->hDC, dis->rcItem.left + 1, dis->rcItem.top + 1,
-                  dis->rcItem.right - 2, dis->rcItem.bottom - 2);
-        SelectObject(dis->hDC, oldBr);
-        SelectObject(dis->hDC, old);
-        DeleteObject(pen);
+    // 仪表盘「快捷操作」卡：与 KPI 卡统一的落影 + 卡片面
+    // 运行概览卡（与 KPI 卡同底色，左侧一条渐变强调条，标题下压细分隔线）
+    if (dis->hwndItem == hwndDashOverviewPanel_) {
+        const auto& sk = peanut::ui::g_skin;
+        FillRect(dis->hDC, &dis->rcItem, hBrushBg_);
+
+        RECT cardRc = dis->rcItem;
+        InflateRect(&cardRc, -kCardPad, -kCardPad);
+        if (cardRc.right > cardRc.left && cardRc.bottom > cardRc.top) {
+            DrawSoftShadow(dis->hDC, cardRc, sk.cardRadius,
+                           sk.shadowSpread, sk.shadowOffsetY, sk.shadowAlpha);
+            const COLORREF brd = peanut::ui::MixColor(sk.border, BG_CARD,
+                                                      1.0f - sk.cardBorderAlpha);
+            FillRoundRect(dis->hDC, cardRc, sk.cardRadius,
+                          BG_CARD, BG_CARD2, true, brd, 1.0f);
+
+            // 左侧强调条（沿用 KPI 卡的处理：圆角内裁切 + 向下渐隐）
+            const int barW = sk.accentBarW > 0 ? sk.accentBarW : 3;
+            Graphics g(dis->hDC);
+            g.SetSmoothingMode(SmoothingModeAntiAlias);
+            RectF rf((REAL)cardRc.left, (REAL)cardRc.top,
+                     (REAL)(cardRc.right - cardRc.left),
+                     (REAL)(cardRc.bottom - cardRc.top));
+            GraphicsPath path;
+            GpRoundPath(path, rf, sk.cardRadius);
+            g.SetClip(&path);
+            RectF barRf((REAL)cardRc.left, (REAL)cardRc.top, (REAL)barW,
+                        (REAL)(cardRc.bottom - cardRc.top));
+            LinearGradientBrush lb(barRf, peanut::ui::Gp(ACCENT),
+                                   peanut::ui::Gp(ACCENT, 60),
+                                   LinearGradientModeVertical);
+            g.FillRectangle(&lb, barRf);
+            g.ResetClip();
+        }
+
+        // 标题与键值区之间的细分隔线
+        RECT sep = { dis->rcItem.left + 20, dis->rcItem.top + kCardPad + 38,
+                     dis->rcItem.right - 20, dis->rcItem.top + kCardPad + 39 };
+        if (sep.right > sep.left) {
+            HBRUSH sb = CreateSolidBrush(sk.border);
+            FillRect(dis->hDC, &sep, sb);
+            DeleteObject(sb);
+        }
+        return;
+    }
+
+    if (dis->hwndItem == hwndDashQuickPanel_) {
+        const auto& sk = peanut::ui::g_skin;
+        FillRect(dis->hDC, &dis->rcItem, hBrushBg_);
+
+        RECT cardRc = dis->rcItem;
+        InflateRect(&cardRc, -kCardPad, -kCardPad);
+        if (cardRc.right > cardRc.left && cardRc.bottom > cardRc.top) {
+            DrawSoftShadow(dis->hDC, cardRc, sk.cardRadius,
+                           sk.shadowSpread, sk.shadowOffsetY, sk.shadowAlpha);
+            const COLORREF brd = peanut::ui::MixColor(sk.border, BG_CARD,
+                                                      1.0f - sk.cardBorderAlpha);
+            FillRoundRect(dis->hDC, cardRc, sk.cardRadius,
+                          BG_CARD, BG_CARD2, true, brd, 1.0f);
+        }
+        return;
+    }
+
+    if (dis->hwndItem == hwndFwRuleCard_ || isSettingsGroup) {
+        const auto& sk = peanut::ui::g_skin;
+        // 先擦成面板底色，圆角之外无残留
+        FillRect(dis->hDC, &dis->rcItem, hBrushBg_);
+
+        RECT cardRc = dis->rcItem;
+        InflateRect(&cardRc, -1, -1);
+        if (cardRc.right > cardRc.left && cardRc.bottom > cardRc.top) {
+            // 设置页分组与面板同底色（其子控件背景即面板色），靠描边 + 顶部高光区分
+            COLORREF topC = isSettingsGroup ? BG_DEEP : BG_CARD;
+            COLORREF botC = isSettingsGroup ? BG_DEEP : BG_CARD2;
+            COLORREF brd  = isSettingsGroup ? BORDER
+                                            : peanut::ui::ShadeColor(BG_CARD2, 0.12f);
+            FillRoundRect(dis->hDC, cardRc, sk.cardRadius, topC, botC, true, brd, 1.0f);
+
+            if (cardRc.bottom - cardRc.top > 10) {
+                Graphics g(dis->hDC);
+                g.SetSmoothingMode(SmoothingModeAntiAlias);
+                RectF rf((REAL)cardRc.left, (REAL)cardRc.top,
+                         (REAL)(cardRc.right - cardRc.left),
+                         (REAL)(cardRc.bottom - cardRc.top));
+                GraphicsPath path;
+                GpRoundPath(path, rf, sk.cardRadius);
+                g.SetClip(&path);
+                RectF tl((REAL)cardRc.left, (REAL)cardRc.top,
+                         (REAL)(cardRc.right - cardRc.left), 2.0f);
+                LinearGradientBrush lb(tl, peanut::ui::Gp(ACCENT),
+                                       peanut::ui::Gp(ACCENT2),
+                                       LinearGradientModeHorizontal);
+                g.FillRectangle(&lb, tl);
+                g.ResetClip();
+            }
+        }
         // 绘制标题文字（左上角）
         if (isSettingsGroup) {
             wchar_t title[128] = {};
             GetWindowTextW(dis->hwndItem, title, 128);
             if (title[0]) {
+                // 标题放在卡片内部（窗口矩形之外的内容会被裁掉，
+                // 所以不能像 fieldset 那样骑在边框上），并在其下压一条细分隔线
+                HFONT oldF = static_cast<HFONT>(SelectObject(dis->hDC, hFontSectionTitle_));
                 SetBkMode(dis->hDC, TRANSPARENT);
-                SetTextColor(dis->hDC, TEXT_SECONDARY);
-                SIZE sz;
-                GetTextExtentPoint32W(dis->hDC, title, (int)wcslen(title), &sz);
-                RECT tr = { dis->rcItem.left + 14, dis->rcItem.top - 1,
-                            dis->rcItem.left + 14 + sz.cx + 16, dis->rcItem.top + 9 };
-                HBRUSH brTitle = CreateSolidBrush(BG_DEEP);
-                FillRect(dis->hDC, &tr, brTitle);
-                DeleteObject(brTitle);
+                SetTextColor(dis->hDC, TEXT_PRIMARY);
+                RECT tr = { dis->rcItem.left + 18, dis->rcItem.top + 10,
+                            dis->rcItem.right - 18, dis->rcItem.top + 40 };
                 DrawTextW(dis->hDC, title, -1, &tr,
-                          DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+                if (oldF) SelectObject(dis->hDC, oldF);
+
+                RECT sep = { dis->rcItem.left + 18, dis->rcItem.top + 44,
+                             dis->rcItem.right - 18, dis->rcItem.top + 45 };
+                if (sep.right > sep.left) {
+                    HBRUSH sb = CreateSolidBrush(sk.border);
+                    FillRect(dis->hDC, &sep, sb);
+                    DeleteObject(sb);
+                }
             }
         }
         return;
@@ -2038,58 +3142,75 @@ void MainWindow::OnDrawItem(WPARAM wp, LPARAM lp) {
     // 统计卡片面板
     for (auto& sc : statCards_) {
         if (sc.hwndPanel == dis->hwndItem) {
-            HBRUSH br = CreateSolidBrush(BG_CARD);
-            FillRect(dis->hDC, &dis->rcItem, br);
-            DeleteObject(br);
-            HPEN pen = CreatePen(PS_SOLID, 1, BORDER);
-            HPEN old = static_cast<HPEN>(SelectObject(dis->hDC, pen));
-            HBRUSH oldBr = static_cast<HBRUSH>(SelectObject(dis->hDC, GetStockObject(NULL_BRUSH)));
-            Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top,
-                      dis->rcItem.right - 1, dis->rcItem.bottom - 1);
-            SelectObject(dis->hDC, oldBr);
-            SelectObject(dis->hDC, old);
-            DeleteObject(pen);
-            // 左侧强调条
-            RECT accent = dis->rcItem;
-            accent.right = accent.left + 3;
-            HBRUSH ab = CreateSolidBrush(sc.accentColor);
-            FillRect(dis->hDC, &accent, ab);
-            DeleteObject(ab);
+            const auto& sk = peanut::ui::g_skin;
+            FillRect(dis->hDC, &dis->rcItem, hBrushBg_);
+
+            // 视觉卡片 = 窗口内缩 kCardPad，让出的空间用于落影
+            RECT cardRc = dis->rcItem;
+            InflateRect(&cardRc, -kCardPad, -kCardPad);
+            if (cardRc.right > cardRc.left && cardRc.bottom > cardRc.top) {
+                DrawSoftShadow(dis->hDC, cardRc, sk.cardRadius,
+                               sk.shadowSpread, sk.shadowOffsetY, sk.shadowAlpha);
+
+                const COLORREF brd = peanut::ui::MixColor(sk.border, BG_CARD,
+                                                          1.0f - sk.cardBorderAlpha);
+                FillRoundRect(dis->hDC, cardRc, sk.cardRadius,
+                              BG_CARD, BG_CARD2, true, brd, 1.0f);
+
+                // 左侧强调条（圆角内裁切，向下渐隐）
+                const int barW = sk.accentBarW > 0 ? sk.accentBarW : 3;
+                Graphics g(dis->hDC);
+                g.SetSmoothingMode(SmoothingModeAntiAlias);
+                RectF rf((REAL)cardRc.left, (REAL)cardRc.top,
+                         (REAL)(cardRc.right - cardRc.left),
+                         (REAL)(cardRc.bottom - cardRc.top));
+                GraphicsPath path;
+                GpRoundPath(path, rf, sk.cardRadius);
+                g.SetClip(&path);
+                RectF barRf((REAL)cardRc.left, (REAL)cardRc.top, (REAL)barW,
+                            (REAL)(cardRc.bottom - cardRc.top));
+                LinearGradientBrush lb(barRf, peanut::ui::Gp(sc.accentColor),
+                                       peanut::ui::Gp(sc.accentColor, 60),
+                                       LinearGradientModeVertical);
+                g.FillRectangle(&lb, barRf);
+                g.ResetClip();
+
+                // 图标容器：强调柔光底 + 居中矢量图标（与数值行居中对齐）
+                const int chipS = 34;
+                const int chipX = cardRc.left + 16;
+                const int chipY = (cardRc.top + cardRc.bottom - chipS) / 2;
+                RECT chip = { chipX, chipY, chipX + chipS, chipY + chipS };
+                FillRoundRect(dis->hDC, chip, 9.0f,
+                              peanut::ui::MixColor(sc.accentColor, BG_CARD,  0.86f),
+                              peanut::ui::MixColor(sc.accentColor, BG_CARD2, 0.86f),
+                              false, 0, 0);
+                if (sc.iconGlyph && sc.iconGlyph[0]) {
+                    const int is = 18;
+                    RectF ib((REAL)(chipX + (chipS - is) / 2),
+                             (REAL)(chipY + (chipS - is) / 2),
+                             (REAL)is, (REAL)is);
+                    peanut::ui::DrawIcon(g, sc.iconGlyph, ib,
+                                         peanut::ui::Gp(sc.accentColor), 1.9f);
+                }
+            }
             return;
         }
     }
 
-    // 普通按钮：GDI 绘制（避免 GDI+/emoji 空白块）
+    // 普通按钮：按"角色"绘制（primary / secondary / ghost / danger / toggle）
     if (dis->CtlType == ODT_BUTTON) {
-        const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
-        const bool disabled = (dis->itemState & ODS_DISABLED) != 0;
-        COLORREF bg = disabled ? BG_INPUT : (pressed ? ACCENT_DIM : BG_CARD);
-        COLORREF fg = disabled ? SUCCESS : TEXT_PRIMARY;
-        COLORREF borderClr = disabled ? SUCCESS : (pressed ? ACCENT : BORDER);
-
-        HBRUSH br = CreateSolidBrush(bg);
-        FillRect(dis->hDC, &dis->rcItem, br);
-        DeleteObject(br);
-
-        HPEN pen = CreatePen(PS_SOLID, 1, borderClr);
-        HPEN oldPen = static_cast<HPEN>(SelectObject(dis->hDC, pen));
-        HBRUSH oldBr = static_cast<HBRUSH>(SelectObject(dis->hDC, GetStockObject(NULL_BRUSH)));
-        Rectangle(dis->hDC, dis->rcItem.left, dis->rcItem.top,
-                  dis->rcItem.right - 1, dis->rcItem.bottom - 1);
-        SelectObject(dis->hDC, oldBr);
-        SelectObject(dis->hDC, oldPen);
-        DeleteObject(pen);
-
-        wchar_t buf[128] = {};
-        GetWindowTextW(dis->hwndItem, buf, 128);
-        SetBkMode(dis->hDC, TRANSPARENT);
-        SetTextColor(dis->hDC, fg);
-        HFONT oldFont = nullptr;
-        if (hFontButton_)
-            oldFont = static_cast<HFONT>(SelectObject(dis->hDC, hFontButton_));
-        DrawTextW(dis->hDC, buf, -1, const_cast<RECT*>(&dis->rcItem),
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-        if (oldFont) SelectObject(dis->hDC, oldFont);
+        // 按钮所在容器底色，用于填充圆角之外
+        HWND par = GetParent(dis->hwndItem);
+        COLORREF surface = BG_DEEP;
+        if (par == hwndPanelLogs_) surface = BG_LOG;
+        else if (par == hwndDashQuickPanel_ || par == hwndFwRuleCard_) surface = BG_CARD;
+        else {
+            for (auto& sc : statCards_) {
+                if (sc.hwndPanel == par) { surface = BG_CARD; break; }
+            }
+        }
+        DrawOwnerButton(dis->hDC, dis->hwndItem, dis->rcItem, dis->itemState,
+                        surface, hFontButton_);
         return;
     }
 
@@ -2157,6 +3278,14 @@ void MainWindow::RefreshCardList() {
     const wchar_t* typeNames[] = { L"天", L"小时", L"月", L"年", L"永久" };
     const wchar_t* statusNames[] = { L"未使用", L"已激活", L"已过期", L"已禁用" };
 
+    // 紧凑表格：时间列只留「月-日 时:分」，去掉年份和秒（完整值在详情里看）
+    auto shortTime = [](const std::string& s) -> std::wstring {
+        std::wstring w = wstring_from_utf8(s);
+        if (w.size() >= 16 && w[4] == L'-' && w[7] == L'-' && w[10] == L' ')
+            return w.substr(5, 5) + L" " + w.substr(11, 5);
+        return w;
+    };
+
     for (auto& card : cards_) {
         // 筛选
         if (filter == 1 && card.status != 1) continue;
@@ -2186,8 +3315,8 @@ void MainWindow::RefreshCardList() {
             durStr,
             statusStr,
             machineCode,
-            wstring_from_utf8(card.activate_time),
-            wstring_from_utf8(card.expire_time),
+            shortTime(card.activate_time),
+            shortTime(card.expire_time),
             remark
         };
         int row=ListView_GetItemCount(hwndCardList_);w32::ListView_AddRow(hwndCardList_, cols);if(hwndCardStateImages_){LVITEMW item{};item.mask=LVIF_IMAGE;item.iItem=row;item.iSubItem=0;item.iImage=online?1:0;ListView_SetItem(hwndCardList_,&item);}
@@ -2395,6 +3524,7 @@ void MainWindow::ApplyDarkTheme() {
     subclass(hwndPanelLogs_);
     subclass(hwndCardBottomBtns_);
     subclass(hwndDashQuickPanel_);
+    subclass(hwndDashOverviewPanel_);
     subclass(hwndFwRuleCard_);
     for (auto& sc : statCards_)
         subclass(sc.hwndPanel);
@@ -2446,6 +3576,92 @@ void MainWindow::ApplyDarkTheme() {
             if (_wcsicmp(cls, L"Button") == 0)
                 SetWindowTheme(c, L"", L"");
         }
+    }
+
+    // ── 按钮角色 + 图标 ────────────────────────────────────
+    // 规则：一屏只有一个 primary；破坏性操作 danger；工具/次要用 ghost；
+    //       开关用 toggle。图标只加在宽度足够的按钮上。
+    struct BtnSpec { HWND h; int role; const wchar_t* icon; };
+    const BtnSpec specs[] = {
+        // 仪表盘快捷操作
+        { hwndDashGenerateBtn_, BTN_PRIMARY,   L"plus"    },
+        { hwndDashRefreshBtn_,  BTN_GHOST,     L"refresh" },
+        // 卡密管理工具栏
+        { hwndCardSearchBtn_,   BTN_SECONDARY, L"search"  },
+        { hwndCardFilterBtn_,   BTN_SECONDARY, L"filter"  },
+        { hwndCardGenerateBtn_, BTN_PRIMARY,   L"plus"    },
+        { hwndCardImportBtn_,   BTN_SECONDARY, L"import"  },
+        { hwndCardExportBtn_,   BTN_SECONDARY, L"export"  },
+        { hwndCardUnbindBtn_,   BTN_SECONDARY, L"unlink"  },
+        { hwndCardDeleteBtn_,   BTN_DANGER,    L"trash"   },
+        { GetDlgItem(hwndPanelCardMgmt_, IDC_CARD_REMARK_BTN), BTN_SECONDARY, L"note" },
+        { GetDlgItem(hwndCardBottomBtns_, IDC_CARD_SELECT_ALL),    BTN_GHOST, nullptr },
+        { GetDlgItem(hwndCardBottomBtns_, IDC_CARD_DESELECT_ALL),  BTN_GHOST, nullptr },
+        { GetDlgItem(hwndCardBottomBtns_, IDC_CARD_COPY_SELECTED), BTN_GHOST, L"copy" },
+        // 插件中心
+        { hwndPluginRefreshBtn_, BTN_SECONDARY, L"refresh" },
+        { hwndPluginExecBtn_,    BTN_PRIMARY,   L"play"    },
+        // 日志
+        { hwndLogClearBtn_,      BTN_GHOST,     nullptr   },
+        { hwndLogExportBtn_,     BTN_GHOST,     L"export" },
+        { hwndLogAutoScrollChk_, BTN_TOGGLE,    nullptr   },
+    };
+    for (const auto& b : specs) {
+        if (!b.h) continue;
+        SetBtnRole(b.h, b.role);
+        if (b.icon) SetBtnIcon(b.h, b.icon);
+        if (b.role == BTN_PRIMARY || b.role == BTN_DANGER)
+            SetBtnAccent(b.h, b.role == BTN_DANGER ? ERROR_COLOR : ACCENT);
+    }
+    SetBtnChecked(hwndLogAutoScrollChk_, logAutoScroll_);
+
+    // 所有自绘按钮挂上 hover 追踪，获得悬停高亮反馈
+    {
+        auto attachHover = [](HWND parent) {
+            if (!parent) return;
+            for (HWND c = GetWindow(parent, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+                wchar_t cls[64] = {};
+                GetClassNameW(c, cls, 64);
+                if (_wcsicmp(cls, L"Button") != 0) continue;
+                const LONG style = GetWindowLongW(c, GWL_STYLE);
+                if ((style & BS_TYPEMASK) != BS_OWNERDRAW) continue;
+                SetWindowSubclass(c, BtnHoverProc, 7, 0);
+            }
+        };
+        attachHover(hwndMain_);
+        attachHover(hwndTopNav_);
+        attachHover(hwndContentArea_);
+        attachHover(hwndPanelDashboard_);
+        attachHover(hwndDashQuickPanel_);
+        attachHover(hwndPanelCardMgmt_);
+        attachHover(hwndCardBottomBtns_);
+        attachHover(hwndPanelPlugin_);
+        attachHover(hwndPanelSettings_);
+        attachHover(hwndPanelFirewall_);
+        attachHover(hwndFwRuleCard_);
+        attachHover(hwndPanelLogs_);
+        for (auto& sc : statCards_) attachHover(sc.hwndPanel);
+    }
+
+    // Edit 边框统一（内部按亮/暗皮肤决定是否接管）
+    {
+        auto attachEdit = [](HWND parent) {
+            if (!parent) return;
+            for (HWND c = GetWindow(parent, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+                wchar_t cls[64] = {};
+                GetClassNameW(c, cls, 64);
+                if (_wcsicmp(cls, L"Edit") == 0) {
+                    SetWindowSubclass(c, EditBorderProc, 8, 0);
+                    RedrawWindow(c, nullptr, nullptr,
+                                 RDW_FRAME | RDW_INVALIDATE | RDW_ERASE);
+                }
+            }
+        };
+        attachEdit(hwndMain_);
+        attachEdit(hwndDashQuickPanel_);
+        attachEdit(hwndPanelCardMgmt_);
+        attachEdit(hwndPanelSettings_);
+        attachEdit(hwndPanelFirewall_);
     }
 
     InvalidateRect(hwndMain_, nullptr, TRUE);
@@ -2884,10 +4100,12 @@ void MainWindow::ApplyUiPrefsToRuntime() {
     cardFilterIndex_ = config_.card_filter;
     protocolMode_ = config_.protocol_mode;
 
-    if (hwndLogAutoScrollChk_)
-        SetWindowTextW(hwndLogAutoScrollChk_, logAutoScroll_ ? L"? 自动滚动" : L"? 暂停滚动");
+    if (hwndLogAutoScrollChk_) {
+        SetWindowTextW(hwndLogAutoScrollChk_, logAutoScroll_ ? L"自动滚动" : L"暂停滚动");
+        SetBtnChecked(hwndLogAutoScrollChk_, logAutoScroll_);
+    }
 
-    static const wchar_t* labels[] = { L"全部 ?", L"已激活 ?", L"已过期 ?", L"已禁用 ?" };
+    static const wchar_t* labels[] = { L"全部", L"已激活", L"已过期", L"已禁用" };
     if (hwndCardFilterBtn_ && cardFilterIndex_ >= 0 && cardFilterIndex_ < 4)
         SetWindowTextW(hwndCardFilterBtn_, labels[cardFilterIndex_]);
 }
